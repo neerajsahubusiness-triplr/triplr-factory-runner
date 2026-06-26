@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Run one medium hub
         run: |
-          curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-full" \
+          curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-step" \
             -H "content-type: application/json" \
             -H "x-factory-token: $FACTORY_TOKEN" \
             -d "{\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
