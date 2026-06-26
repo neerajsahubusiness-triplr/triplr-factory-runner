@@ -1,0 +1,36 @@
+name: Factory Medium Hubs
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: "Parallel workers"
+        required: true
+        default: "3"
+      pause_ms:
+        description: "Pause between cluster batches"
+        required: true
+        default: "12000"
+      max_steps:
+        description: "Max cluster-generation steps per hub"
+        required: true
+        default: "40"
+
+jobs:
+  run-medium:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3]
+
+    steps:
+      - name: Run one medium hub
+        run: |
+          curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-full" \
+            -H "content-type: application/json" \
+            -H "x-factory-token: $FACTORY_TOKEN" \
+            -d "{\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
+        env:
+          FACTORY_URL: ${{ secrets.FACTORY_URL }}
+          FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
