@@ -1,0 +1,163 @@
+name: Audit Location Geo
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "Rows per batch"
+        required: true
+        default: "500"
+      max_batches:
+        description: "Maximum batches in this run"
+        required: true
+        default: "5"
+      sleep_ms:
+        description: "Delay between Google calls"
+        required: true
+        default: "100"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Audit hub place ids and geo
+        uses: actions/github-script@v7
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size }}
+          MAX_BATCHES: ${{ github.event.inputs.max_batches }}
+          SLEEP_MS: ${{ github.event.inputs.sleep_ms }}
+        with:
+          script: |
+            const batchSize = Math.min(Number(process.env.BATCH_SIZE || 500), 1000);
+            const maxBatches = Math.min(Number(process.env.MAX_BATCHES || 5), 50);
+            const sleepMs = Math.max(Number(process.env.SLEEP_MS || 100), 0);
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            async function supabase(path, options = {}) {
+              const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${path}`, {
+                ...options,
+                headers: {
+                  apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+                  Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+                  "Content-Type": "application/json",
+                  Prefer: options.prefer || "return=representation",
+                  ...(options.headers || {})
+                }
+              });
+
+              const text = await res.text();
+              if (!res.ok) throw new Error(`Supabase ${res.status}: ${text}`);
+              return text ? JSON.parse(text) : null;
+            }
+
+            function norm(s) {
+              return String(s || "")
+                .toLowerCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^a-z0-9]+/g, " ")
+                .trim();
+            }
+
+            let totalDone = 0;
+            let totalFailed = 0;
+
+            for (let batch = 1; batch <= maxBatches; batch++) {
+              const rows = await supabase(
+                `factory_location_geo_audit?match_status=eq.pending&order=created_at.asc&limit=${batchSize}&select=id,location_id,name,country_code,admin1,hub_size,old_place_id,old_lat,old_lng,attempts`
+              );
+
+              console.log(`Batch ${batch}: picked ${rows.length}`);
+
+              if (!rows.length) {
+                console.log("No pending rows left. Finished.");
+                break;
+              }
+
+              let batchDone = 0;
+              let batchFailed = 0;
+
+              for (const row of rows) {
+                try {
+                  const query = [row.name, row.admin1, row.country_code].filter(Boolean).join(", ");
+
+                  const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+                    method: "POST",
+                    headers: {
+                      "X-Goog-Api-Key": process.env.GOOGLE_PLACES_API_KEY,
+                      "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.types,places.location",
+                      "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                      textQuery: query,
+                      maxResultCount: 1
+                    })
+                  });
+
+                  const data = await res.json();
+
+                  if (!res.ok) throw new Error(JSON.stringify(data));
+
+                  const place = data?.places?.[0];
+                  if (!place) throw new Error("No Google place found");
+
+                  const googleLat = place?.location?.latitude;
+                  const googleLng = place?.location?.longitude;
+                  const googleName = place?.displayName?.text || null;
+
+                  if (typeof googleLat !== "number" || typeof googleLng !== "number") {
+                    throw new Error("No lat/lng returned");
+                  }
+
+                  const exactish = norm(googleName) === norm(row.name);
+                  const containsish = norm(googleName).includes(norm(row.name)) || norm(row.name).includes(norm(googleName));
+
+                  await supabase(`factory_location_geo_audit?id=eq.${row.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                      google_place_id: place.id,
+                      google_name: googleName,
+                      google_formatted_address: place.formattedAddress || null,
+                      google_types: place.types || [],
+                      google_lat: googleLat,
+                      google_lng: googleLng,
+                      match_status: exactish || containsish ? "done" : "review",
+                      confidence_score: exactish ? 1 : containsish ? 0.85 : 0.65,
+                      review_reason: exactish || containsish ? null : "Name differs from Google result",
+                      error: null,
+                      attempts: (row.attempts || 0) + 1,
+                      updated_at: new Date().toISOString()
+                    })
+                  });
+
+                  batchDone++;
+                  totalDone++;
+
+                } catch (err) {
+                  await supabase(`factory_location_geo_audit?id=eq.${row.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                      match_status: "failed",
+                      error: String(err.message || err).slice(0, 2000),
+                      attempts: (row.attempts || 0) + 1,
+                      updated_at: new Date().toISOString()
+                    })
+                  });
+
+                  batchFailed++;
+                  totalFailed++;
+                  console.log(`FAILED: ${row.name} - ${String(err.message || err).slice(0, 250)}`);
+                }
+
+                if (sleepMs > 0) await sleep(sleepMs);
+              }
+
+              console.log(`Batch ${batch} done. Done=${batchDone}, Failed=${batchFailed}`);
+            }
+
+            console.log(`Finished run. Total done=${totalDone}, Total failed=${totalFailed}`);
