@@ -1,36 +1,63 @@
-run: |
-  HUB_ID=""
+name: Factory Medium Hubs
 
-  for i in $(seq 1 ${{ github.event.inputs.max_steps }}); do
-    if [ -z "$HUB_ID" ]; then
-      PAYLOAD="{\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
-    else
-      PAYLOAD="{\"factory_hub_id\":\"$HUB_ID\",\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
-    fi
+on:
+  workflow_dispatch:
+    inputs:
+      pause_ms:
+        description: "Pause between cluster batches"
+        required: true
+        default: "12000"
+      max_steps:
+        description: "Max step calls per worker"
+        required: true
+        default: "40"
 
-    RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-step" \
-      -H "content-type: application/json" \
-      -H "x-factory-token: $FACTORY_TOKEN" \
-      -d "$PAYLOAD")
+jobs:
+  run-medium:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3]
 
-    echo "$RESPONSE"
+    steps:
+      - name: Run one medium hub until complete
+        run: |
+          HUB_ID=""
 
-    HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
+          for i in $(seq 1 ${{ github.event.inputs.max_steps }}); do
+            if [ -z "$HUB_ID" ]; then
+              PAYLOAD="{\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
+            else
+              PAYLOAD="{\"factory_hub_id\":\"$HUB_ID\",\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
+            fi
 
-    if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' > /dev/null; then
-      echo "No pending hubs. Exiting."
-      exit 0
-    fi
+            RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-step" \
+              -H "content-type: application/json" \
+              -H "x-factory-token: $FACTORY_TOKEN" \
+              -d "$PAYLOAD")
 
-    if echo "$RESPONSE" | jq -e '.hub_done == true' > /dev/null; then
-      echo "Hub completed."
-      exit 0
-    fi
+            echo "$RESPONSE"
 
-    if echo "$RESPONSE" | jq -e '.ok != true' > /dev/null; then
-      echo "Worker failed."
-      exit 1
-    fi
+            HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
 
-    sleep $(( ${{ github.event.inputs.pause_ms }} / 1000 ))
-  done
+            if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' > /dev/null; then
+              echo "No pending hubs. Exiting."
+              exit 0
+            fi
+
+            if echo "$RESPONSE" | jq -e '.hub_done == true' > /dev/null; then
+              echo "Hub completed."
+              exit 0
+            fi
+
+            if echo "$RESPONSE" | jq -e '.ok != true' > /dev/null; then
+              echo "Worker failed."
+              exit 1
+            fi
+
+            sleep $(( ${{ github.event.inputs.pause_ms }} / 1000 ))
+          done
+        env:
+          FACTORY_URL: ${{ secrets.FACTORY_URL }}
+          FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
