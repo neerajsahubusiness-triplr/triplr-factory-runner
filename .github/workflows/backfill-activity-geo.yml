@@ -3,26 +3,41 @@ name: Backfill Activity Geo
 on:
   workflow_dispatch:
     inputs:
-      limit:
-        description: "Rows per run"
+      batch_size:
+        description: "Rows per batch"
         required: true
         default: "500"
+      max_batches:
+        description: "Maximum batches in this run"
+        required: true
+        default: "50"
+      sleep_ms:
+        description: "Delay between Google calls"
+        required: true
+        default: "100"
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: Run geo backfill
+      - name: Backfill lat/lng from Google Places
         uses: actions/github-script@v7
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          LIMIT: ${{ github.event.inputs.limit }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size }}
+          MAX_BATCHES: ${{ github.event.inputs.max_batches }}
+          SLEEP_MS: ${{ github.event.inputs.sleep_ms }}
         with:
           script: |
-            const limit = Math.min(Number(process.env.LIMIT || 500), 1000);
+            const batchSize = Math.min(Number(process.env.BATCH_SIZE || 500), 1000);
+            const maxBatches = Math.min(Number(process.env.MAX_BATCHES || 50), 200);
+            const sleepMs = Math.max(Number(process.env.SLEEP_MS || 100), 0);
+
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             async function supabase(path, options = {}) {
               const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${path}`, {
@@ -37,75 +52,94 @@ jobs:
               });
 
               const text = await res.text();
-              if (!res.ok) throw new Error(`Supabase ${res.status}: ${text}`);
+
+              if (!res.ok) {
+                throw new Error(`Supabase ${res.status}: ${text}`);
+              }
+
               return text ? JSON.parse(text) : null;
             }
 
-            const rows = await supabase(
-              `factory_activity_geo_backfill?status=eq.pending&google_place_id=not.is.null&order=created_at.asc&limit=${limit}&select=id,activity_id,activity_name,google_place_id,attempts`
-            );
+            let totalDone = 0;
+            let totalFailed = 0;
 
-            console.log(`Picked ${rows.length} rows`);
+            for (let batch = 1; batch <= maxBatches; batch++) {
+              const rows = await supabase(
+                `factory_activity_geo_backfill?status=eq.pending&google_place_id=not.is.null&order=created_at.asc&limit=${batchSize}&select=id,activity_id,activity_name,google_place_id,attempts`
+              );
 
-            let done = 0;
-            let failed = 0;
+              console.log(`Batch ${batch}: picked ${rows.length}`);
 
-            for (const row of rows) {
-              try {
-                const url = `https://places.googleapis.com/v1/places/${encodeURIComponent(row.google_place_id)}`;
-
-                const res = await fetch(url, {
-                  headers: {
-                    "X-Goog-Api-Key": process.env.GOOGLE_PLACES_API_KEY,
-                    "X-Goog-FieldMask": "location"
-                  }
-                });
-
-                const data = await res.json();
-
-                if (!res.ok) {
-                  throw new Error(JSON.stringify(data));
-                }
-
-                const lat = data?.location?.latitude;
-                const lng = data?.location?.longitude;
-
-                if (typeof lat !== "number" || typeof lng !== "number") {
-                  throw new Error("No location returned");
-                }
-
-                await supabase(`factory_activity_geo_backfill?id=eq.${row.id}`, {
-                  method: "PATCH",
-                  body: JSON.stringify({
-                    lat,
-                    lng,
-                    status: "done",
-                    error: null,
-                    attempts: (row.attempts || 0) + 1,
-                    updated_at: new Date().toISOString()
-                  })
-                });
-
-                done++;
-                console.log(`DONE: ${row.activity_name}`);
-
-              } catch (err) {
-                failed++;
-
-                await supabase(`factory_activity_geo_backfill?id=eq.${row.id}`, {
-                  method: "PATCH",
-                  body: JSON.stringify({
-                    status: "failed",
-                    error: String(err.message || err),
-                    attempts: (row.attempts || 0) + 1,
-                    updated_at: new Date().toISOString()
-                  })
-                });
-
-                console.log(`FAILED: ${row.activity_name} - ${String(err.message || err).slice(0, 250)}`);
+              if (!rows.length) {
+                console.log("No pending rows left. Finished.");
+                break;
               }
 
-              await new Promise(r => setTimeout(r, 100));
+              let batchDone = 0;
+              let batchFailed = 0;
+
+              for (const row of rows) {
+                try {
+                  const url = `https://places.googleapis.com/v1/places/${encodeURIComponent(row.google_place_id)}`;
+
+                  const res = await fetch(url, {
+                    method: "GET",
+                    headers: {
+                      "X-Goog-Api-Key": process.env.GOOGLE_PLACES_API_KEY,
+                      "X-Goog-FieldMask": "location"
+                    }
+                  });
+
+                  const data = await res.json();
+
+                  if (!res.ok) {
+                    throw new Error(JSON.stringify(data));
+                  }
+
+                  const lat = data?.location?.latitude;
+                  const lng = data?.location?.longitude;
+
+                  if (typeof lat !== "number" || typeof lng !== "number") {
+                    throw new Error("No location returned");
+                  }
+
+                  await supabase(`factory_activity_geo_backfill?id=eq.${row.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                      lat,
+                      lng,
+                      status: "done",
+                      error: null,
+                      attempts: (row.attempts || 0) + 1,
+                      updated_at: new Date().toISOString()
+                    })
+                  });
+
+                  batchDone++;
+                  totalDone++;
+
+                } catch (err) {
+                  await supabase(`factory_activity_geo_backfill?id=eq.${row.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                      status: "failed",
+                      error: String(err.message || err).slice(0, 2000),
+                      attempts: (row.attempts || 0) + 1,
+                      updated_at: new Date().toISOString()
+                    })
+                  });
+
+                  batchFailed++;
+                  totalFailed++;
+                  console.log(`FAILED: ${row.activity_name} - ${String(err.message || err).slice(0, 250)}`);
+                }
+
+                if (sleepMs > 0) {
+                  await sleep(sleepMs);
+                }
+              }
+
+              console.log(`Batch ${batch} done. Done=${batchDone}, Failed=${batchFailed}`);
             }
 
-            console.log(`Finished. Done=${done}, Failed=${failed}`);
+            console.log(`Finished run. Total done=${totalDone}, Total failed=${totalFailed}`);
