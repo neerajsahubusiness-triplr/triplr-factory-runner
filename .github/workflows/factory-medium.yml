@@ -7,10 +7,14 @@ on:
         description: "Pause between cluster batches"
         required: true
         default: "12000"
-      max_steps:
-        description: "Max step calls per worker"
+      max_steps_per_hub:
+        description: "Max step calls per hub"
         required: true
-        default: "40"
+        default: "30"
+      max_hubs_per_worker:
+        description: "Max hubs each worker can process"
+        required: true
+        default: "1"
 
 jobs:
   run-medium:
@@ -21,42 +25,51 @@ jobs:
         worker: [1, 2, 3]
 
     steps:
-      - name: Run one medium hub until complete
+      - name: Run medium hubs with limit
         run: |
-          HUB_ID=""
+          for hub_num in $(seq 1 ${{ github.event.inputs.max_hubs_per_worker }}); do
+            echo "Worker ${{ matrix.worker }} starting hub $hub_num"
+            HUB_ID=""
 
-          for i in $(seq 1 ${{ github.event.inputs.max_steps }}); do
-            if [ -z "$HUB_ID" ]; then
-              PAYLOAD="{\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
-            else
-              PAYLOAD="{\"factory_hub_id\":\"$HUB_ID\",\"pause_ms\":${{ github.event.inputs.pause_ms }},\"max_steps\":${{ github.event.inputs.max_steps }}}"
-            fi
+            for i in $(seq 1 ${{ github.event.inputs.max_steps_per_hub }}); do
+              if [ -z "$HUB_ID" ]; then
+                PAYLOAD="{\"pause_ms\":${{ github.event.inputs.pause_ms }}}"
+              else
+                PAYLOAD="{\"factory_hub_id\":\"$HUB_ID\",\"pause_ms\":${{ github.event.inputs.pause_ms }}}"
+              fi
 
-            RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-step" \
-              -H "content-type: application/json" \
-              -H "x-factory-token: $FACTORY_TOKEN" \
-              -d "$PAYLOAD")
+              RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-step" \
+                -H "content-type: application/json" \
+                -H "x-factory-token: $FACTORY_TOKEN" \
+                -d "$PAYLOAD")
 
-            echo "$RESPONSE"
+              echo "$RESPONSE"
 
-            HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
+              if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
+                echo "Non-JSON response from Worker. Will retry this step."
+                sleep 30
+                continue
+              fi
 
-            if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' > /dev/null; then
-              echo "No pending hubs. Exiting."
-              exit 0
-            fi
+              HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
 
-            if echo "$RESPONSE" | jq -e '.hub_done == true' > /dev/null; then
-              echo "Hub completed."
-              exit 0
-            fi
+              if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' > /dev/null; then
+                echo "No pending hubs. Exiting."
+                exit 0
+              fi
 
-            if echo "$RESPONSE" | jq -e '.ok != true' > /dev/null; then
-              echo "Worker failed."
-              exit 1
-            fi
+              if echo "$RESPONSE" | jq -e '.hub_done == true' > /dev/null; then
+                echo "Hub completed."
+                break
+              fi
 
-            sleep $(( ${{ github.event.inputs.pause_ms }} / 1000 ))
+              if echo "$RESPONSE" | jq -e '.ok != true' > /dev/null; then
+                echo "Worker failed."
+                exit 1
+              fi
+
+              sleep $(( ${{ github.event.inputs.pause_ms }} / 1000 ))
+            done
           done
         env:
           FACTORY_URL: ${{ secrets.FACTORY_URL }}
