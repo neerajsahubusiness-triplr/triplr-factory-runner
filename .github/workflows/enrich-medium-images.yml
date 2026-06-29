@@ -3,14 +3,22 @@ name: Enrich Medium Images
 on:
   workflow_dispatch:
     inputs:
-      hub_limit:
-        description: "Number of hubs"
+      hub_count:
+        description: "How many hubs to complete"
         required: true
         default: "20"
+      batches_per_hub:
+        description: "16 for Medium hubs because 80 / 5 = 16"
+        required: true
+        default: "16"
       activity_limit:
-        description: "Activities per hub"
+        description: "Activities per Worker call"
         required: true
         default: "5"
+      pause_seconds:
+        description: "Pause between calls"
+        required: true
+        default: "10"
       target_tier:
         description: "Tier"
         required: true
@@ -21,13 +29,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Call Factory image enrichment
+      - name: Run image enrichment loop
         run: |
-          curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
-            -H "Content-Type: application/json" \
-            -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
-            --data '{
-              "target_tier": "${{ github.event.inputs.target_tier }}",
-              "hub_limit": ${{ github.event.inputs.hub_limit }},
-              "activity_limit": ${{ github.event.inputs.activity_limit }}
-            }'
+          HUB_COUNT=${{ github.event.inputs.hub_count }}
+          BATCHES_PER_HUB=${{ github.event.inputs.batches_per_hub }}
+          ACTIVITY_LIMIT=${{ github.event.inputs.activity_limit }}
+          PAUSE_SECONDS=${{ github.event.inputs.pause_seconds }}
+          TARGET_TIER="${{ github.event.inputs.target_tier }}"
+
+          for hub in $(seq 1 $HUB_COUNT); do
+            echo "Starting hub $hub of $HUB_COUNT"
+
+            for batch in $(seq 1 $BATCHES_PER_HUB); do
+              echo "Hub $hub / Batch $batch of $BATCHES_PER_HUB"
+
+              curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
+                -H "Content-Type: application/json" \
+                -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
+                --data "{
+                  \"target_tier\": \"${TARGET_TIER}\",
+                  \"hub_limit\": 1,
+                  \"activity_limit\": ${ACTIVITY_LIMIT}
+                }"
+
+              echo ""
+              sleep $PAUSE_SECONDS
+            done
+
+            echo "Finished hub loop $hub"
+          done
