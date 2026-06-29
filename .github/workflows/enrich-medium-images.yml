@@ -1,3 +1,5 @@
+name: Enrich Medium Images
+
 on:
   workflow_dispatch:
     inputs:
@@ -5,13 +7,27 @@ on:
         description: "Number of hubs"
         required: true
         default: "20"
-
       activity_limit:
         description: "Activities per hub"
         required: true
         default: "5"
-
       target_tier:
         description: "Tier"
         required: true
         default: "medium"
+
+jobs:
+  enrich-images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call Factory image enrichment
+        run: |
+          curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
+            -H "Content-Type: application/json" \
+            -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
+            --data '{
+              "target_tier": "${{ github.event.inputs.target_tier }}",
+              "hub_limit": ${{ github.event.inputs.hub_limit }},
+              "activity_limit": ${{ github.event.inputs.activity_limit }}
+            }'
