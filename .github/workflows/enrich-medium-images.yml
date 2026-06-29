@@ -1,0 +1,21 @@
+name: Enrich Medium Images
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Factory Image Enrichment
+        run: |
+          curl -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
+            -H "Content-Type: application/json" \
+            -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
+            --data '{
+              "target_tier": "medium",
+              "hub_limit": 20,
+              "activity_limit": 5
+            }'
