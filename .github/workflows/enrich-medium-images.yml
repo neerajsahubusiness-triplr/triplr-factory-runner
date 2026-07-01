@@ -24,7 +24,7 @@ on:
         required: true
         default: "medium"
       factory_hub_id:
-        description: "Optional fixed factory hub id"
+        description: "Optional fixed factory hub id / leave blank for auto-claim"
         required: false
         default: ""
 
@@ -40,28 +40,46 @@ jobs:
           ACTIVITY_LIMIT=${{ github.event.inputs.activity_limit }}
           PAUSE_SECONDS=${{ github.event.inputs.pause_seconds }}
           TARGET_TIER="${{ github.event.inputs.target_tier }}"
-          FACTORY_HUB_ID="${{ github.event.inputs.factory_hub_id }}"
+          FIXED_FACTORY_HUB_ID="${{ github.event.inputs.factory_hub_id }}"
 
           for hub in $(seq 1 $HUB_COUNT); do
             echo "Starting hub $hub of $HUB_COUNT"
 
+            if [ -n "$FIXED_FACTORY_HUB_ID" ]; then
+              FACTORY_HUB_ID="$FIXED_FACTORY_HUB_ID"
+              echo "Using fixed hub id: $FACTORY_HUB_ID"
+            else
+              CLAIM=$(curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/claim-image-hub" \
+                -H "Content-Type: application/json" \
+                -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
+                --data "{
+                  \"target_tier\": \"${TARGET_TIER}\"
+                }")
+
+              echo "CLAIM RESPONSE:"
+              echo "$CLAIM"
+
+              FACTORY_HUB_ID=$(echo "$CLAIM" | jq -r '.factory_hub_id // empty')
+              HUB_NAME=$(echo "$CLAIM" | jq -r '.hub_name // empty')
+
+              if [ -z "$FACTORY_HUB_ID" ]; then
+                echo "No pending hub found. Stopping."
+                exit 0
+              fi
+
+              echo "Claimed hub: $HUB_NAME ($FACTORY_HUB_ID)"
+            fi
+
             for batch in $(seq 1 $BATCHES_PER_HUB); do
               echo "Hub $hub / Batch $batch of $BATCHES_PER_HUB"
+              echo "Processing factory hub id: $FACTORY_HUB_ID"
 
-              if [ -n "$FACTORY_HUB_ID" ]; then
-                BODY="{
-                  \"target_tier\": \"${TARGET_TIER}\",
-                  \"hub_limit\": 1,
-                  \"activity_limit\": ${ACTIVITY_LIMIT},
-                  \"factory_hub_id\": \"${FACTORY_HUB_ID}\"
-                }"
-              else
-                BODY="{
-                  \"target_tier\": \"${TARGET_TIER}\",
-                  \"hub_limit\": 1,
-                  \"activity_limit\": ${ACTIVITY_LIMIT}
-                }"
-              fi
+              BODY="{
+                \"target_tier\": \"${TARGET_TIER}\",
+                \"hub_limit\": 1,
+                \"activity_limit\": ${ACTIVITY_LIMIT},
+                \"factory_hub_id\": \"${FACTORY_HUB_ID}\"
+              }"
 
               curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
                 -H "Content-Type: application/json" \
