@@ -6,7 +6,7 @@ on:
       hub_count:
         description: "How many hubs to complete"
         required: true
-        default: "20"
+        default: "1"
       batches_per_hub:
         description: "16 for Medium hubs because 80 / 5 = 16"
         required: true
@@ -23,6 +23,10 @@ on:
         description: "Tier"
         required: true
         default: "medium"
+      factory_hub_id:
+        description: "Optional fixed factory hub id"
+        required: false
+        default: ""
 
 jobs:
   enrich-images:
@@ -36,6 +40,7 @@ jobs:
           ACTIVITY_LIMIT=${{ github.event.inputs.activity_limit }}
           PAUSE_SECONDS=${{ github.event.inputs.pause_seconds }}
           TARGET_TIER="${{ github.event.inputs.target_tier }}"
+          FACTORY_HUB_ID="${{ github.event.inputs.factory_hub_id }}"
 
           for hub in $(seq 1 $HUB_COUNT); do
             echo "Starting hub $hub of $HUB_COUNT"
@@ -43,14 +48,25 @@ jobs:
             for batch in $(seq 1 $BATCHES_PER_HUB); do
               echo "Hub $hub / Batch $batch of $BATCHES_PER_HUB"
 
-              curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
-                -H "Content-Type: application/json" \
-                -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
-                --data "{
+              if [ -n "$FACTORY_HUB_ID" ]; then
+                BODY="{
+                  \"target_tier\": \"${TARGET_TIER}\",
+                  \"hub_limit\": 1,
+                  \"activity_limit\": ${ACTIVITY_LIMIT},
+                  \"factory_hub_id\": \"${FACTORY_HUB_ID}\"
+                }"
+              else
+                BODY="{
                   \"target_tier\": \"${TARGET_TIER}\",
                   \"hub_limit\": 1,
                   \"activity_limit\": ${ACTIVITY_LIMIT}
                 }"
+              fi
+
+              curl -sS -X POST "https://triplr-factory.neeraj-sahu-business.workers.dev/factory/enrich-next-images" \
+                -H "Content-Type: application/json" \
+                -H "x-factory-token: ${{ secrets.FACTORY_ADMIN_TOKEN }}" \
+                --data "$BODY"
 
               echo ""
               sleep $PAUSE_SECONDS
