@@ -14,6 +14,11 @@ on:
           - small
           - micro
 
+      factory_hub_id:
+        description: "Fixed factory hub ID optional"
+        required: false
+        default: ""
+
       hub_limit:
         description: "How many hubs per step"
         required: true
@@ -27,7 +32,7 @@ on:
       steps:
         description: "How many repeated calls"
         required: true
-        default: "10"
+        default: "16"
 
       pause_seconds:
         description: "Pause between calls"
@@ -44,6 +49,7 @@ jobs:
           FACTORY_URL: https://triplr-factory.neeraj-sahu-business.workers.dev
           FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
           TARGET_TIER: ${{ inputs.target_tier }}
+          FACTORY_HUB_ID: ${{ inputs.factory_hub_id }}
           HUB_LIMIT: ${{ inputs.hub_limit }}
           ACTIVITY_LIMIT: ${{ inputs.activity_limit }}
           STEPS: ${{ inputs.steps }}
@@ -51,6 +57,7 @@ jobs:
         run: |
           echo "Starting Google Places enrichment"
           echo "Tier: $TARGET_TIER"
+          echo "Factory hub ID: ${FACTORY_HUB_ID:-auto}"
           echo "Hub limit: $HUB_LIMIT"
           echo "Activity limit: $ACTIVITY_LIMIT"
           echo "Steps: $STEPS"
@@ -61,10 +68,16 @@ jobs:
             echo "Step $i / $STEPS"
             echo "=============================="
 
+            if [ -n "$FACTORY_HUB_ID" ]; then
+              BODY="{\"target_tier\":\"$TARGET_TIER\",\"factory_hub_id\":\"$FACTORY_HUB_ID\",\"hub_limit\":1,\"activity_limit\":$ACTIVITY_LIMIT}"
+            else
+              BODY="{\"target_tier\":\"$TARGET_TIER\",\"hub_limit\":$HUB_LIMIT,\"activity_limit\":$ACTIVITY_LIMIT}"
+            fi
+
             RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/enrich-next-google-places" \
               -H "Content-Type: application/json" \
               -H "x-factory-token: $FACTORY_TOKEN" \
-              -d "{\"target_tier\":\"$TARGET_TIER\",\"hub_limit\":$HUB_LIMIT,\"activity_limit\":$ACTIVITY_LIMIT}")
+              -d "$BODY")
 
             echo "$RESPONSE" | jq .
 
@@ -82,7 +95,7 @@ jobs:
             fi
 
             echo "Progress summary:"
-            echo "$RESPONSE" | jq '{total_processed,total_done,total_review,total_failed,hubs:[.hubs[]? | {hub_name,country_code,picked,processed,done,review,failed}]}'
+            echo "$RESPONSE" | jq '{total_processed,total_done,total_review,total_failed,hubs:[.hubs[]? | {factory_hub_id,hub_name,country_code,picked,processed,done,review,failed}]}'
 
             sleep "$PAUSE_SECONDS"
           done
