@@ -1,0 +1,90 @@
+name: Factory Google Places Enrichment
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tier:
+        description: "Hub tier"
+        required: true
+        default: "medium"
+        type: choice
+        options:
+          - medium
+          - large
+          - small
+          - micro
+
+      hub_limit:
+        description: "How many hubs per step"
+        required: true
+        default: "1"
+
+      activity_limit:
+        description: "Activities per hub per step"
+        required: true
+        default: "5"
+
+      steps:
+        description: "How many repeated calls"
+        required: true
+        default: "10"
+
+      pause_seconds:
+        description: "Pause between calls"
+        required: true
+        default: "5"
+
+jobs:
+  google-places:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run Google Places enrichment
+        env:
+          FACTORY_URL: https://triplr-factory.neeraj-sahu-business.workers.dev
+          FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
+          TARGET_TIER: ${{ inputs.target_tier }}
+          HUB_LIMIT: ${{ inputs.hub_limit }}
+          ACTIVITY_LIMIT: ${{ inputs.activity_limit }}
+          STEPS: ${{ inputs.steps }}
+          PAUSE_SECONDS: ${{ inputs.pause_seconds }}
+        run: |
+          echo "Starting Google Places enrichment"
+          echo "Tier: $TARGET_TIER"
+          echo "Hub limit: $HUB_LIMIT"
+          echo "Activity limit: $ACTIVITY_LIMIT"
+          echo "Steps: $STEPS"
+
+          for i in $(seq 1 $STEPS); do
+            echo ""
+            echo "=============================="
+            echo "Step $i / $STEPS"
+            echo "=============================="
+
+            RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/enrich-next-google-places" \
+              -H "Content-Type: application/json" \
+              -H "x-factory-token: $FACTORY_TOKEN" \
+              -d "{\"target_tier\":\"$TARGET_TIER\",\"hub_limit\":$HUB_LIMIT,\"activity_limit\":$ACTIVITY_LIMIT}")
+
+            echo "$RESPONSE" | jq .
+
+            OK=$(echo "$RESPONSE" | jq -r '.ok')
+            NO_PENDING=$(echo "$RESPONSE" | jq -r '.no_pending_hubs // false')
+
+            if [ "$OK" != "true" ]; then
+              echo "Worker returned failure"
+              exit 1
+            fi
+
+            if [ "$NO_PENDING" = "true" ]; then
+              echo "No pending hubs left. Stopping."
+              exit 0
+            fi
+
+            echo "Progress summary:"
+            echo "$RESPONSE" | jq '{total_processed,total_done,total_review,total_failed,hubs:[.hubs[]? | {hub_name,country_code,picked,processed,done,review,failed}]}'
+
+            sleep "$PAUSE_SECONDS"
+          done
+
+          echo "Completed requested steps."
