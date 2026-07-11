@@ -67,14 +67,33 @@ jobs:
               echo "Using fixed Factory hub ID:"
               echo "$FACTORY_HUB_ID"
             else
-              CLAIM_RESPONSE=$(curl -sS \
-                -X POST \
-                "$FACTORY_URL/factory/claim-image-hub" \
-                -H "Content-Type: application/json" \
-                -H "x-factory-token: $FACTORY_TOKEN" \
-                --data "{
-                  \"target_tier\": \"$TARGET_TIER\"
-                }")
+             CLAIM_HTTP_CODE=$(curl -sS \
+  -o claim-response.txt \
+  -w "%{http_code}" \
+  -X POST \
+  "$FACTORY_URL/factory/claim-image-hub" \
+  -H "Content-Type: application/json" \
+  -H "x-factory-token: $FACTORY_TOKEN" \
+  --data "{
+    \"target_tier\": \"$TARGET_TIER\"
+  }")
+
+echo "Claim HTTP status: $CLAIM_HTTP_CODE"
+echo "Raw claim response:"
+cat claim-response.txt
+echo ""
+
+if [ "$CLAIM_HTTP_CODE" -lt 200 ] || [ "$CLAIM_HTTP_CODE" -ge 300 ]; then
+  echo "Claim endpoint failed."
+  exit 1
+fi
+
+if ! jq empty claim-response.txt >/dev/null 2>&1; then
+  echo "Claim endpoint did not return valid JSON."
+  exit 1
+fi
+
+CLAIM_RESPONSE=$(cat claim-response.txt)
 
               echo "Claim response:"
               echo "$CLAIM_RESPONSE" | jq .
