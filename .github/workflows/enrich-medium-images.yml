@@ -1,4 +1,4 @@
-name: Complete Medium Hub Enrichment
+name: Enrich Medium Images
 
 on:
   workflow_dispatch:
@@ -13,23 +13,18 @@ on:
         required: true
         default: "5"
 
-      max_image_calls:
-        description: "Maximum image calls per hub"
-        required: true
-        default: "40"
-
-      max_google_calls:
-        description: "Maximum Google calls per hub"
+      max_calls_per_hub:
+        description: "Maximum Worker calls per hub"
         required: true
         default: "40"
 
       pause_seconds:
-        description: "Pause between Worker calls"
+        description: "Pause between calls"
         required: true
         default: "8"
 
       target_tier:
-        description: "Hub tier"
+        description: "Tier"
         required: true
         default: "medium"
 
@@ -39,7 +34,7 @@ on:
         default: ""
 
 jobs:
-  complete-medium-hubs:
+  enrich-images:
     runs-on: ubuntu-latest
 
     env:
@@ -47,15 +42,14 @@ jobs:
       FACTORY_TOKEN: ${{ secrets.FACTORY_ADMIN_TOKEN }}
 
     steps:
-      - name: Complete Medium hubs
+      - name: Complete Medium hub images
         shell: bash
         run: |
           set -euo pipefail
 
           HUB_COUNT="${{ inputs.hub_count }}"
           ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
-          MAX_IMAGE_CALLS="${{ inputs.max_image_calls }}"
-          MAX_GOOGLE_CALLS="${{ inputs.max_google_calls }}"
+          MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
           PAUSE_SECONDS="${{ inputs.pause_seconds }}"
           TARGET_TIER="${{ inputs.target_tier }}"
           FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
@@ -63,7 +57,7 @@ jobs:
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
             echo "========================================"
-            echo "Starting hub $HUB_NUMBER of $HUB_COUNT"
+            echo "Starting image hub $HUB_NUMBER of $HUB_COUNT"
             echo "========================================"
 
             if [ -n "$FIXED_FACTORY_HUB_ID" ]; then
@@ -85,6 +79,13 @@ jobs:
               echo "Claim response:"
               echo "$CLAIM_RESPONSE" | jq .
 
+              CLAIM_OK=$(echo "$CLAIM_RESPONSE" | jq -r '.ok // false')
+
+              if [ "$CLAIM_OK" != "true" ]; then
+                echo "Hub claim failed."
+                exit 1
+              fi
+
               FACTORY_HUB_ID=$(echo "$CLAIM_RESPONSE" | jq -r \
                 '.factory_hub_id // empty')
 
@@ -92,25 +93,25 @@ jobs:
                 '.hub_name // "Unknown hub"')
 
               if [ -z "$FACTORY_HUB_ID" ]; then
-                echo "No pending Medium hub found."
+                echo "No pending Medium image hub found."
                 exit 0
               fi
             fi
 
             echo ""
-            echo "Locked hub:"
+            echo "Locked image hub:"
             echo "$HUB_NAME ($FACTORY_HUB_ID)"
 
-            IMAGE_COMPLETE="false"
+            HUB_COMPLETE="false"
 
-            for IMAGE_CALL in $(seq 1 "$MAX_IMAGE_CALLS"); do
+            for CALL_NUMBER in $(seq 1 "$MAX_CALLS_PER_HUB"); do
               echo ""
               echo "----------------------------------------"
-              echo "Image call $IMAGE_CALL / $MAX_IMAGE_CALLS"
-              echo "Hub: $FACTORY_HUB_ID"
+              echo "Image call $CALL_NUMBER / $MAX_CALLS_PER_HUB"
+              echo "Factory hub: $FACTORY_HUB_ID"
               echo "----------------------------------------"
 
-              IMAGE_RESPONSE=$(curl --fail-with-body -sS \
+              RESPONSE=$(curl --fail-with-body -sS \
                 -X POST \
                 "$FACTORY_URL/factory/enrich-next-images" \
                 -H "Content-Type: application/json" \
@@ -122,102 +123,48 @@ jobs:
                   \"factory_hub_id\": \"$FACTORY_HUB_ID\"
                 }")
 
-              echo "$IMAGE_RESPONSE" | jq .
+              echo "$RESPONSE" | jq .
 
-              IMAGE_OK=$(echo "$IMAGE_RESPONSE" | jq -r \
-                '.ok // false')
-
-              IMAGE_COMPLETE=$(echo "$IMAGE_RESPONSE" | jq -r \
+              OK=$(echo "$RESPONSE" | jq -r '.ok // false')
+              HUB_COMPLETE=$(echo "$RESPONSE" | jq -r \
                 '.hub_complete // false')
 
-              IMAGE_DONE=$(echo "$IMAGE_RESPONSE" | jq -r \
+              COMPLETE_COUNT=$(echo "$RESPONSE" | jq -r \
                 '.image_complete_count // 0')
 
-              IMAGE_MISSING=$(echo "$IMAGE_RESPONSE" | jq -r \
+              INCOMPLETE_COUNT=$(echo "$RESPONSE" | jq -r \
                 '.image_incomplete_count // 80')
 
-              if [ "$IMAGE_OK" != "true" ]; then
+              if [ "$OK" != "true" ]; then
                 echo "Image Worker returned failure."
                 exit 1
               fi
 
-              echo "Image progress: $IMAGE_DONE / 80"
-              echo "Image incomplete: $IMAGE_MISSING"
+              echo "Image progress: $COMPLETE_COUNT / 80"
+              echo "Still incomplete: $INCOMPLETE_COUNT"
 
-              if [ "$IMAGE_COMPLETE" = "true" ]; then
-                echo "Images complete: 80 / 80"
+              if [ "$HUB_COMPLETE" = "true" ]; then
+                echo ""
+                echo "Image hub complete: 80 / 80"
                 break
               fi
 
               sleep "$PAUSE_SECONDS"
             done
 
-            if [ "$IMAGE_COMPLETE" != "true" ]; then
-              echo "Images did not reach 80/80."
-              echo "Stopping before Google and before next hub."
-              exit 1
-            fi
-
-            GOOGLE_COMPLETE="false"
-
-            for GOOGLE_CALL in $(seq 1 "$MAX_GOOGLE_CALLS"); do
+            if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
-              echo "----------------------------------------"
-              echo "Google call $GOOGLE_CALL / $MAX_GOOGLE_CALLS"
-              echo "Hub: $FACTORY_HUB_ID"
-              echo "----------------------------------------"
-
-              GOOGLE_RESPONSE=$(curl --fail-with-body -sS \
-                -X POST \
-                "$FACTORY_URL/factory/enrich-next-google-places" \
-                -H "Content-Type: application/json" \
-                -H "x-factory-token: $FACTORY_TOKEN" \
-                --data "{
-                  \"target_tier\": \"$TARGET_TIER\",
-                  \"hub_limit\": 1,
-                  \"activity_limit\": $ACTIVITY_LIMIT,
-                  \"factory_hub_id\": \"$FACTORY_HUB_ID\"
-                }")
-
-              echo "$GOOGLE_RESPONSE" | jq .
-
-              GOOGLE_OK=$(echo "$GOOGLE_RESPONSE" | jq -r \
-                '.ok // false')
-
-              GOOGLE_COMPLETE=$(echo "$GOOGLE_RESPONSE" | jq -r \
-                '.google_complete // false')
-
-              GOOGLE_FINALISED=$(echo "$GOOGLE_RESPONSE" | jq -r \
-                '.google_finalised_count // 0')
-
-              if [ "$GOOGLE_OK" != "true" ]; then
-                echo "Google Worker returned failure."
-                exit 1
-              fi
-
-              echo "Google progress: $GOOGLE_FINALISED / 80"
-
-              if [ "$GOOGLE_COMPLETE" = "true" ]; then
-                echo "Google enrichment complete: 80 / 80"
-                break
-              fi
-
-              sleep "$PAUSE_SECONDS"
-            done
-
-            if [ "$GOOGLE_COMPLETE" != "true" ]; then
-              echo "Google enrichment did not reach 80/80."
-              echo "Stopping before the next hub."
+              echo "Image hub did not reach 80 / 80."
+              echo "Stopping. The next hub will not be claimed."
               exit 1
             fi
 
             echo ""
             echo "========================================"
-            echo "FULL HUB COMPLETE"
+            echo "IMAGE HUB COMPLETE"
             echo "$HUB_NAME"
             echo "$FACTORY_HUB_ID"
             echo "Images: 80 / 80"
-            echo "Google: 80 / 80 classified"
             echo "========================================"
 
             if [ -n "$FIXED_FACTORY_HUB_ID" ]; then
