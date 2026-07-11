@@ -67,7 +67,7 @@ jobs:
               echo "Using fixed Factory hub ID:"
               echo "$FACTORY_HUB_ID"
             else
-              CLAIM_RESPONSE=$(curl --fail-with-body -sS \
+              CLAIM_RESPONSE=$(curl -sS \
                 -X POST \
                 "$FACTORY_URL/factory/claim-image-hub" \
                 -H "Content-Type: application/json" \
@@ -111,7 +111,7 @@ jobs:
               echo "Factory hub: $FACTORY_HUB_ID"
               echo "----------------------------------------"
 
-              RESPONSE=$(curl --fail-with-body -sS \
+              RESPONSE=$(curl -sS \
                 -X POST \
                 "$FACTORY_URL/factory/enrich-next-images" \
                 -H "Content-Type: application/json" \
