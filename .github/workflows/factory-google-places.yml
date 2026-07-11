@@ -1,7 +1,7 @@
 name: Factory Google Places Enrichment
 
 on:
-  workflow_dispatch_disabled:
+  workflow_dispatch:
     inputs:
       target_tier:
         description: "Hub tier"
