@@ -1,4 +1,4 @@
-name: Enrich Medium Images
+name: Enrich Medium Images1
 
 on:
   workflow_dispatch:
