@@ -16,7 +16,7 @@ on:
       max_calls_per_hub:
         description: "Maximum Worker calls per hub"
         required: true
-        default: "40"
+        default: "60"
 
       pause_seconds:
         description: "Pause between calls"
