@@ -51,12 +51,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          HUB_COUNT="${{ inputs.hub_count }}"
-          ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
-          MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
-          PAUSE_SECONDS="${{ inputs.pause_seconds }}"
-          TIERS="${{ inputs.tiers }}"
-          FIXED_HUB_ID="${{ inputs.fixed_hub_id }}"
+         if [ "${{ github.event_name }}" = "schedule" ]; then
+  HUB_COUNT="1"
+  ACTIVITY_LIMIT="5"
+  MAX_CALLS_PER_HUB="35"
+  PAUSE_SECONDS="5"
+  TIERS="mega"
+  FIXED_HUB_ID=""
+else
+  HUB_COUNT="${{ inputs.hub_count }}"
+  ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
+  MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
+  PAUSE_SECONDS="${{ inputs.pause_seconds }}"
+  TIERS="${{ inputs.tiers }}"
+  FIXED_HUB_ID="${{ inputs.fixed_hub_id }}"
+fi
 
           IFS=',' read -ra TIER_ARRAY <<< "$TIERS"
 
