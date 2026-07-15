@@ -35,7 +35,10 @@ on:
 
   schedule:
     - cron: "17 * * * *"
-    
+
+concurrency:
+  group: factory-pexels-mega-hourly
+  cancel-in-progress: false
 
 jobs:
   pexels-enrichment:
@@ -51,21 +54,21 @@ jobs:
         run: |
           set -euo pipefail
 
-         if [ "${{ github.event_name }}" = "schedule" ]; then
-  HUB_COUNT="1"
-  ACTIVITY_LIMIT="5"
-  MAX_CALLS_PER_HUB="35"
-  PAUSE_SECONDS="5"
-  TIERS="mega"
-  FIXED_HUB_ID=""
-else
-  HUB_COUNT="${{ inputs.hub_count }}"
-  ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
-  MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
-  PAUSE_SECONDS="${{ inputs.pause_seconds }}"
-  TIERS="${{ inputs.tiers }}"
-  FIXED_HUB_ID="${{ inputs.fixed_hub_id }}"
-fi
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            HUB_COUNT="1"
+            ACTIVITY_LIMIT="5"
+            MAX_CALLS_PER_HUB="35"
+            PAUSE_SECONDS="5"
+            TIERS="mega"
+            FIXED_HUB_ID=""
+          else
+            HUB_COUNT="${{ inputs.hub_count }}"
+            ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
+            MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
+            PAUSE_SECONDS="${{ inputs.pause_seconds }}"
+            TIERS="${{ inputs.tiers }}"
+            FIXED_HUB_ID="${{ inputs.fixed_hub_id }}"
+          fi
 
           IFS=',' read -ra TIER_ARRAY <<< "$TIERS"
 
@@ -115,28 +118,20 @@ fi
               exit 1
             fi
 
-            if ! jq empty pexels-claim-response.json \
-              >/dev/null 2>&1; then
+            if ! jq empty pexels-claim-response.json >/dev/null 2>&1; then
               echo "Claim response is not valid JSON."
               exit 1
             fi
 
-            CLAIM_OK=$(jq -r \
-              '.ok // false' \
-              pexels-claim-response.json)
+            CLAIM_OK=$(jq -r '.ok // false' pexels-claim-response.json)
 
             if [ "$CLAIM_OK" != "true" ]; then
               echo "Pexels claim returned failure."
               exit 1
             fi
 
-            HUB_ID=$(jq -r \
-              '.hub_id // empty' \
-              pexels-claim-response.json)
-
-            HUB_NAME=$(jq -r \
-              '.hub_name // "Unknown hub"' \
-              pexels-claim-response.json)
+            HUB_ID=$(jq -r '.hub_id // empty' pexels-claim-response.json)
+            HUB_NAME=$(jq -r '.hub_name // "Unknown hub"' pexels-claim-response.json)
 
             if [ -z "$HUB_ID" ]; then
               echo "No pending Pexels hubs found."
@@ -183,35 +178,17 @@ fi
                 exit 1
               fi
 
-              if ! jq empty pexels-response.json \
-                >/dev/null 2>&1; then
+              if ! jq empty pexels-response.json >/dev/null 2>&1; then
                 echo "Pexels response is not valid JSON."
                 exit 1
               fi
 
-              OK=$(jq -r \
-                '.ok // false' \
-                pexels-response.json)
-
-              HUB_COMPLETE=$(jq -r \
-                '.hub_complete // false' \
-                pexels-response.json)
-
-              COMPLETED=$(jq -r \
-                '.completed_activities // 0' \
-                pexels-response.json)
-
-              TOTAL=$(jq -r \
-                '.total_activities // 0' \
-                pexels-response.json)
-
-              INCOMPLETE=$(jq -r \
-                '.incomplete_activities // 0' \
-                pexels-response.json)
-
-              FAILED=$(jq -r \
-                '.failed_activities // 0' \
-                pexels-response.json)
+              OK=$(jq -r '.ok // false' pexels-response.json)
+              HUB_COMPLETE=$(jq -r '.hub_complete // false' pexels-response.json)
+              COMPLETED=$(jq -r '.completed_activities // 0' pexels-response.json)
+              TOTAL=$(jq -r '.total_activities // 0' pexels-response.json)
+              INCOMPLETE=$(jq -r '.incomplete_activities // 0' pexels-response.json)
+              FAILED=$(jq -r '.failed_activities // 0' pexels-response.json)
 
               if [ "$OK" != "true" ]; then
                 echo "Pexels Worker returned failure."
