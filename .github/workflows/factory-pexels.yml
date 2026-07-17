@@ -1,4 +1,4 @@
-name: Factory Pexels Enrichment
+name: Factory Pexels Enrichment Large
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
       activity_limit:
         description: "Activities per Worker call"
         required: true
-        default: "5"
+        default: "20"
 
       max_calls_per_hub:
         description: "Maximum Worker calls per hub"
@@ -26,7 +26,7 @@ on:
       tiers:
         description: "Hub tiers"
         required: true
-        default: "mega"
+        default: "large"
 
       fixed_hub_id:
         description: "Optional fixed canonical hub ID"
@@ -37,7 +37,7 @@ on:
     - cron: "17 * * * *"
 
 concurrency:
-  group: factory-pexels-mega-hourly
+  group: factory-pexels-large-hourly
   cancel-in-progress: false
 
 jobs:
@@ -49,17 +49,17 @@ jobs:
       FACTORY_TOKEN: ${{ secrets.FACTORY_ADMIN_TOKEN }}
 
     steps:
-      - name: Complete Pexels hubs
+      - name: Complete Pexels Large hubs
         shell: bash
         run: |
           set -euo pipefail
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
             HUB_COUNT="1"
-            ACTIVITY_LIMIT="5"
+            ACTIVITY_LIMIT="20"
             MAX_CALLS_PER_HUB="35"
             PAUSE_SECONDS="5"
-            TIERS="mega"
+            TIERS="large"
             FIXED_HUB_ID=""
           else
             HUB_COUNT="${{ inputs.hub_count }}"
@@ -79,7 +79,7 @@ jobs:
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
             echo "========================================"
-            echo "Starting Pexels hub $HUB_NUMBER / $HUB_COUNT"
+            echo "Starting Pexels Large hub $HUB_NUMBER / $HUB_COUNT"
             echo "========================================"
 
             if [ -n "$FIXED_HUB_ID" ]; then
@@ -134,11 +134,11 @@ jobs:
             HUB_NAME=$(jq -r '.hub_name // "Unknown hub"' pexels-claim-response.json)
 
             if [ -z "$HUB_ID" ]; then
-              echo "No pending Pexels hubs found."
+              echo "No pending Large Pexels hubs found."
               exit 0
             fi
 
-            echo "Locked Pexels hub:"
+            echo "Locked Pexels Large hub:"
             echo "$HUB_NAME ($HUB_ID)"
 
             HUB_COMPLETE="false"
@@ -148,6 +148,7 @@ jobs:
               echo "----------------------------------------"
               echo "Pexels call $CALL_NUMBER / $MAX_CALLS_PER_HUB"
               echo "Hub: $HUB_ID"
+              echo "Activity limit: $ACTIVITY_LIMIT"
               echo "----------------------------------------"
 
               BODY=$(jq -n \
@@ -201,7 +202,7 @@ jobs:
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
-                echo "Pexels hub complete."
+                echo "Pexels Large hub complete."
                 break
               fi
 
@@ -210,14 +211,14 @@ jobs:
 
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
-              echo "Pexels hub did not complete."
+              echo "Pexels Large hub did not complete."
               echo "The next hub will not be claimed."
               exit 1
             fi
 
             echo ""
             echo "========================================"
-            echo "PEXELS HUB COMPLETE"
+            echo "PEXELS LARGE HUB COMPLETE"
             echo "$HUB_NAME"
             echo "$HUB_ID"
             echo "========================================"
