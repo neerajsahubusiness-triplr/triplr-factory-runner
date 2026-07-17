@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            HUB_COUNT="1"
+            HUB_COUNT="3"
             ACTIVITY_LIMIT="20"
             MAX_CALLS_PER_HUB="35"
             PAUSE_SECONDS="5"
