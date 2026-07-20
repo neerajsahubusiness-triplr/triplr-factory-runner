@@ -7,70 +7,154 @@ on:
         description: "Pause between cluster batches"
         required: true
         default: "12000"
+
       max_steps_per_hub:
         description: "Max step calls per hub"
         required: true
         default: "20"
+
       max_hubs_per_worker:
         description: "Max hubs each worker can process"
         required: true
         default: "5"
 
+      factory_hub_id:
+        description: "Optional fixed factory_hub.id. Leave blank for auto-claim."
+        required: false
+        default: ""
+
 jobs:
-  run-medium:
+  run-small:
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
         worker: [1, 2, 3]
 
     steps:
-      - name: Run medium hubs with limit
+      - name: Run small hubs with limit
+        shell: bash
         run: |
-          for hub_num in $(seq 1 ${{ github.event.inputs.max_hubs_per_worker }}); do
-            echo "Worker ${{ matrix.worker }} starting hub $hub_num"
+          set -euo pipefail
+
+          PAUSE_MS="${{ github.event.inputs.pause_ms }}"
+          MAX_STEPS="${{ github.event.inputs.max_steps_per_hub }}"
+          MAX_HUBS="${{ github.event.inputs.max_hubs_per_worker }}"
+          FIXED_HUB_ID="${{ github.event.inputs.factory_hub_id }}"
+          WORKER_NUMBER="${{ matrix.worker }}"
+
+          echo "======================================"
+          echo "Factory Small Hubs"
+          echo "Worker: $WORKER_NUMBER"
+          echo "Max hubs for worker: $MAX_HUBS"
+          echo "Max steps per hub: $MAX_STEPS"
+          echo "Pause: ${PAUSE_MS}ms"
+          echo "Fixed hub: ${FIXED_HUB_ID:-auto-claim}"
+          echo "======================================"
+
+          # A fixed hub must only run on worker 1.
+          # This prevents three workers processing the same hub.
+          if [ -n "$FIXED_HUB_ID" ] && [ "$WORKER_NUMBER" != "1" ]; then
+            echo "Fixed hub supplied. Worker $WORKER_NUMBER exiting."
+            exit 0
+          fi
+
+          for hub_num in $(seq 1 "$MAX_HUBS"); do
+            echo ""
+            echo "Worker $WORKER_NUMBER starting hub $hub_num of $MAX_HUBS"
+
             HUB_ID=""
 
-            for i in $(seq 1 ${{ github.event.inputs.max_steps_per_hub }}); do
+            if [ -n "$FIXED_HUB_ID" ]; then
+              HUB_ID="$FIXED_HUB_ID"
+            fi
+
+            HUB_COMPLETED="false"
+
+            for step_num in $(seq 1 "$MAX_STEPS"); do
+              echo ""
+              echo "Worker $WORKER_NUMBER | Hub $hub_num | Step $step_num"
+              echo "Hub ID: ${HUB_ID:-auto-claim}"
+
               if [ -z "$HUB_ID" ]; then
-                PAYLOAD="{\"pause_ms\":${{ github.event.inputs.pause_ms }}}"
+                PAYLOAD=$(jq -n \
+                  --arg target_tier "small" \
+                  --argjson pause_ms "$PAUSE_MS" \
+                  '{
+                    target_tier: $target_tier,
+                    pause_ms: $pause_ms
+                  }')
               else
-                PAYLOAD="{\"factory_hub_id\":\"$HUB_ID\",\"pause_ms\":${{ github.event.inputs.pause_ms }}}"
+                PAYLOAD=$(jq -n \
+                  --arg factory_hub_id "$HUB_ID" \
+                  --arg target_tier "small" \
+                  --argjson pause_ms "$PAUSE_MS" \
+                  '{
+                    factory_hub_id: $factory_hub_id,
+                    target_tier: $target_tier,
+                    pause_ms: $pause_ms
+                  }')
               fi
 
-              RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-small-hub-step" \
+              RESPONSE=$(curl \
+                --silent \
+                --show-error \
+                --max-time 240 \
+                -X POST \
+                "$FACTORY_URL/factory/run-next-hub-step" \
                 -H "content-type: application/json" \
                 -H "x-factory-token: $FACTORY_TOKEN" \
-                -d "$PAYLOAD")
+                -d "$PAYLOAD" \
+                || true)
 
-              echo "$RESPONSE"
+              echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
 
               if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
-                echo "Non-JSON response from Worker. Will retry this step."
+                echo "Non-JSON response from Worker. Retrying after 30 seconds."
                 sleep 30
                 continue
               fi
 
-              HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
+              RESPONSE_HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
 
-              if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' > /dev/null; then
-                echo "No pending hubs. Exiting."
+              if [ -n "$RESPONSE_HUB_ID" ]; then
+                HUB_ID="$RESPONSE_HUB_ID"
+              fi
+
+              if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' >/dev/null; then
+                echo "No pending Small hubs remain."
                 exit 0
               fi
 
-              if echo "$RESPONSE" | jq -e '.hub_done == true' > /dev/null; then
-                echo "Hub completed."
+              if echo "$RESPONSE" | jq -e '.hub_done == true' >/dev/null; then
+                echo "Hub completed: $HUB_ID"
+                HUB_COMPLETED="true"
                 break
               fi
 
-              if echo "$RESPONSE" | jq -e '.ok != true' > /dev/null; then
-                echo "Worker failed."
+              if echo "$RESPONSE" | jq -e '.ok != true' >/dev/null; then
+                ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r '.error // .result.error // .message // "Unknown Worker failure"')
+                echo "Worker failed: $ERROR_MESSAGE"
                 exit 1
               fi
 
-              sleep $(( ${{ github.event.inputs.pause_ms }} / 1000 ))
+              sleep $((PAUSE_MS / 1000))
             done
+
+            if [ "$HUB_COMPLETED" != "true" ]; then
+              echo "Hub did not complete within $MAX_STEPS steps."
+              echo "Factory hub ID: ${HUB_ID:-unknown}"
+              exit 1
+            fi
+
+            # A fixed hub should run once only.
+            if [ -n "$FIXED_HUB_ID" ]; then
+              echo "Fixed hub completed."
+              exit 0
+            fi
           done
+
         env:
           FACTORY_URL: ${{ secrets.FACTORY_URL }}
           FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
