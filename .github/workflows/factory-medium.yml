@@ -1,4 +1,4 @@
-name: Factory Medium Hubs
+name: Factory Small Hubs
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       max_steps_per_hub:
         description: "Max step calls per hub"
         required: true
-        default: "30"
+        default: "20"
       max_hubs_per_worker:
         description: "Max hubs each worker can process"
         required: true
