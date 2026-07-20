@@ -14,7 +14,7 @@ on:
       max_hubs_per_worker:
         description: "Max hubs each worker can process"
         required: true
-        default: "1"
+        default: "5"
 
 jobs:
   run-medium:
@@ -38,7 +38,7 @@ jobs:
                 PAYLOAD="{\"factory_hub_id\":\"$HUB_ID\",\"pause_ms\":${{ github.event.inputs.pause_ms }}}"
               fi
 
-              RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-medium-hub-step" \
+              RESPONSE=$(curl -sS -X POST "$FACTORY_URL/factory/run-next-small-hub-step" \
                 -H "content-type: application/json" \
                 -H "x-factory-token: $FACTORY_TOKEN" \
                 -d "$PAYLOAD")
