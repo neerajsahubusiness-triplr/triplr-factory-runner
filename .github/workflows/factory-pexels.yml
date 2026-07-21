@@ -3,11 +3,11 @@ name: Factory Pexels Enrichment Large
 on:
   schedule:
     - cron: "0 * * * *"
-    
+
   workflow_dispatch:
     inputs:
       hub_count:
-        description: "How many hubs to fully complete"
+        description: "How many Large hubs to fully complete"
         required: true
         default: "3"
 
@@ -19,7 +19,7 @@ on:
       max_calls_per_hub:
         description: "Maximum Worker calls per hub"
         required: true
-        default: "20"
+        default: "35"
 
       pause_seconds:
         description: "Pause between calls"
@@ -27,7 +27,7 @@ on:
         default: "5"
 
       tiers:
-        description: "Hub tiers"
+        description: "Hub tiers, comma-separated"
         required: true
         default: "large"
 
@@ -70,11 +70,47 @@ jobs:
             FIXED_HUB_ID="${{ inputs.fixed_hub_id }}"
           fi
 
-          IFS=',' read -ra TIER_ARRAY <<< "$TIERS"
+          if ! [[ "$HUB_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "hub_count must be a positive integer."
+            exit 1
+          fi
 
-          TIER_JSON=$(printf '%s\n' "${TIER_ARRAY[@]}" \
+          if ! [[ "$ACTIVITY_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "activity_limit must be a positive integer."
+            exit 1
+          fi
+
+          if ! [[ "$MAX_CALLS_PER_HUB" =~ ^[1-9][0-9]*$ ]]; then
+            echo "max_calls_per_hub must be a positive integer."
+            exit 1
+          fi
+
+          if ! [[ "$PAUSE_SECONDS" =~ ^[0-9]+$ ]]; then
+            echo "pause_seconds must be zero or a positive integer."
+            exit 1
+          fi
+
+          TIER_JSON=$(printf '%s' "$TIERS" \
+            | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | sed '/^$/d' \
             | jq -R . \
             | jq -s .)
+
+          TIER_COUNT=$(echo "$TIER_JSON" | jq 'length')
+
+          if [ "$TIER_COUNT" -eq 0 ]; then
+            echo "At least one tier is required."
+            exit 1
+          fi
+
+          echo "Configuration:"
+          echo "Hub count: $HUB_COUNT"
+          echo "Activity limit: $ACTIVITY_LIMIT"
+          echo "Maximum calls per hub: $MAX_CALLS_PER_HUB"
+          echo "Pause seconds: $PAUSE_SECONDS"
+          echo "Tiers: $TIER_JSON"
+          echo "Fixed hub ID: ${FIXED_HUB_ID:-none}"
 
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
@@ -123,25 +159,37 @@ jobs:
               exit 1
             fi
 
-            CLAIM_OK=$(jq -r '.ok // false' pexels-claim-response.json)
+            CLAIM_OK=$(jq -r \
+              '.ok // false' \
+              pexels-claim-response.json)
 
             if [ "$CLAIM_OK" != "true" ]; then
               echo "Pexels claim returned failure."
               exit 1
             fi
 
-            HUB_ID=$(jq -r '.hub_id // empty' pexels-claim-response.json)
-            HUB_NAME=$(jq -r '.hub_name // "Unknown hub"' pexels-claim-response.json)
+            HUB_ID=$(jq -r \
+              '.hub_id // empty' \
+              pexels-claim-response.json)
+
+            HUB_NAME=$(jq -r \
+              '.hub_name // "Unknown hub"' \
+              pexels-claim-response.json)
 
             if [ -z "$HUB_ID" ]; then
               echo "No pending Large Pexels hubs found."
               exit 0
             fi
 
+            echo ""
             echo "Locked Pexels Large hub:"
             echo "$HUB_NAME ($HUB_ID)"
 
             HUB_COMPLETE="false"
+            COMPLETED="0"
+            TOTAL="0"
+            INCOMPLETE="0"
+            FAILED="0"
 
             for CALL_NUMBER in $(seq 1 "$MAX_CALLS_PER_HUB"); do
               echo ""
@@ -184,12 +232,29 @@ jobs:
                 exit 1
               fi
 
-              OK=$(jq -r '.ok // false' pexels-response.json)
-              HUB_COMPLETE=$(jq -r '.hub_complete // false' pexels-response.json)
-              COMPLETED=$(jq -r '.completed_activities // 0' pexels-response.json)
-              TOTAL=$(jq -r '.total_activities // 0' pexels-response.json)
-              INCOMPLETE=$(jq -r '.incomplete_activities // 0' pexels-response.json)
-              FAILED=$(jq -r '.failed_activities // 0' pexels-response.json)
+              OK=$(jq -r \
+                '.ok // false' \
+                pexels-response.json)
+
+              HUB_COMPLETE=$(jq -r \
+                '.hub_complete // false' \
+                pexels-response.json)
+
+              COMPLETED=$(jq -r \
+                '.completed_activities // 0' \
+                pexels-response.json)
+
+              TOTAL=$(jq -r \
+                '.total_activities // 0' \
+                pexels-response.json)
+
+              INCOMPLETE=$(jq -r \
+                '.incomplete_activities // 0' \
+                pexels-response.json)
+
+              FAILED=$(jq -r \
+                '.failed_activities // 0' \
+                pexels-response.json)
 
               if [ "$OK" != "true" ]; then
                 echo "Pexels Worker returned failure."
@@ -202,7 +267,7 @@ jobs:
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
-                echo "Pexels Large hub complete."
+                echo "Pexels Large hub complete: $COMPLETED / $TOTAL"
                 break
               fi
 
@@ -211,7 +276,10 @@ jobs:
 
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
-              echo "Pexels Large hub did not complete."
+              echo "Pexels Large hub did not complete within $MAX_CALLS_PER_HUB calls."
+              echo "Completed: $COMPLETED / $TOTAL"
+              echo "Incomplete: $INCOMPLETE"
+              echo "Failed: $FAILED"
               echo "The next hub will not be claimed."
               exit 1
             fi
@@ -221,6 +289,8 @@ jobs:
             echo "PEXELS LARGE HUB COMPLETE"
             echo "$HUB_NAME"
             echo "$HUB_ID"
+            echo "Activities: $COMPLETED / $TOTAL"
+            echo "Failed: $FAILED"
             echo "========================================"
 
             if [ -n "$FIXED_HUB_ID" ]; then
