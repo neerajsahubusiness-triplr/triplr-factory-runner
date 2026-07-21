@@ -6,7 +6,7 @@ on:
       hub_count:
         description: "How many Medium hubs to fully complete"
         required: true
-        default: "1"
+        default: "15"
 
       activity_limit:
         description: "Activities per Worker call"
@@ -16,7 +16,7 @@ on:
       max_calls_per_hub:
         description: "Maximum Worker calls per hub"
         required: true
-        default: "60"
+        default: "20"
 
       pause_seconds:
         description: "Pause between calls"
@@ -26,7 +26,7 @@ on:
       target_tier:
         description: "Tier"
         required: true
-        default: "medium"
+        default: "small"
 
       factory_hub_id:
         description: "Optional fixed Factory hub ID"
