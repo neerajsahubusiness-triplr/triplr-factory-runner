@@ -3,6 +3,7 @@ name: Enrich Small Images
 on:
   schedule:
     - cron: "0 * * * *"
+
   workflow_dispatch:
     inputs:
       hub_count:
@@ -35,6 +36,10 @@ on:
         required: false
         default: ""
 
+concurrency:
+  group: enrich-small-images-hourly
+  cancel-in-progress: false
+
 jobs:
   enrich-images:
     runs-on: ubuntu-latest
@@ -48,6 +53,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [ "${{ github.event_name }}" = "schedule" ]; then
             HUB_COUNT="15"
             ACTIVITY_LIMIT="5"
@@ -63,10 +69,11 @@ jobs:
             TARGET_TIER="${{ inputs.target_tier }}"
             FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
           fi
+
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
             echo "========================================"
-            echo "Starting image hub $HUB_NUMBER of $HUB_COUNT"
+            echo "Starting Small image hub $HUB_NUMBER of $HUB_COUNT"
             echo "========================================"
 
             if [ -n "$FIXED_FACTORY_HUB_ID" ]; then
@@ -77,7 +84,7 @@ jobs:
               echo "$FACTORY_HUB_ID"
             else
               CLAIM_HTTP_CODE=$(curl -sS \
-                -o claim-response.txt \
+                -o claim-response.json \
                 -w "%{http_code}" \
                 -X POST \
                 "$FACTORY_URL/factory/claim-image-hub" \
@@ -89,36 +96,34 @@ jobs:
 
               echo "Claim HTTP status: $CLAIM_HTTP_CODE"
               echo "Raw claim response:"
-              cat claim-response.txt
+              cat claim-response.json
               echo ""
 
-              if [ "$CLAIM_HTTP_CODE" -lt 200 ] || [ "$CLAIM_HTTP_CODE" -ge 300 ]; then
+              if [ "$CLAIM_HTTP_CODE" -lt 200 ] || \
+                 [ "$CLAIM_HTTP_CODE" -ge 300 ]; then
                 echo "Claim endpoint failed."
                 exit 1
               fi
 
-              if ! jq empty claim-response.txt >/dev/null 2>&1; then
+              if ! jq empty claim-response.json >/dev/null 2>&1; then
                 echo "Claim endpoint did not return valid JSON."
                 exit 1
               fi
 
-              CLAIM_RESPONSE=$(cat claim-response.txt)
-
-              echo "Claim response:"
-              echo "$CLAIM_RESPONSE" | jq .
-
-              CLAIM_OK=$(echo "$CLAIM_RESPONSE" | jq -r '.ok // false')
+              CLAIM_OK=$(jq -r '.ok // false' claim-response.json)
 
               if [ "$CLAIM_OK" != "true" ]; then
                 echo "Hub claim failed."
                 exit 1
               fi
 
-              FACTORY_HUB_ID=$(echo "$CLAIM_RESPONSE" | jq -r \
-                '.factory_hub_id // empty')
+              FACTORY_HUB_ID=$(jq -r \
+                '.factory_hub_id // empty' \
+                claim-response.json)
 
-              HUB_NAME=$(echo "$CLAIM_RESPONSE" | jq -r \
-                '.hub_name // "Unknown hub"')
+              HUB_NAME=$(jq -r \
+                '.hub_name // "Unknown hub"' \
+                claim-response.json)
 
               if [ -z "$FACTORY_HUB_ID" ]; then
                 echo "No pending Small image hub found."
@@ -127,52 +132,73 @@ jobs:
             fi
 
             echo ""
-            echo "Locked image hub:"
+            echo "Locked Small image hub:"
             echo "$HUB_NAME ($FACTORY_HUB_ID)"
 
             HUB_COMPLETE="false"
+            COMPLETE_COUNT="0"
+            INCOMPLETE_COUNT="0"
+            TOTAL_COUNT="0"
 
             for CALL_NUMBER in $(seq 1 "$MAX_CALLS_PER_HUB"); do
               echo ""
               echo "----------------------------------------"
               echo "Image call $CALL_NUMBER / $MAX_CALLS_PER_HUB"
               echo "Factory hub: $FACTORY_HUB_ID"
+              echo "Activity limit: $ACTIVITY_LIMIT"
               echo "----------------------------------------"
 
-              RESPONSE=$(curl -sS \
+              BODY=$(jq -n \
+                --arg target_tier "$TARGET_TIER" \
+                --arg factory_hub_id "$FACTORY_HUB_ID" \
+                --argjson activity_limit "$ACTIVITY_LIMIT" \
+                '{
+                  target_tier: $target_tier,
+                  hub_limit: 1,
+                  activity_limit: $activity_limit,
+                  factory_hub_id: $factory_hub_id
+                }')
+
+              HTTP_CODE=$(curl -sS \
+                -o image-response.json \
+                -w "%{http_code}" \
                 -X POST \
                 "$FACTORY_URL/factory/enrich-next-images" \
                 -H "Content-Type: application/json" \
                 -H "x-factory-token: $FACTORY_TOKEN" \
-                --data "{
-                  \"target_tier\": \"$TARGET_TIER\",
-                  \"hub_limit\": 1,
-                  \"activity_limit\": $ACTIVITY_LIMIT,
-                  \"factory_hub_id\": \"$FACTORY_HUB_ID\"
-                }")
+                --data "$BODY")
 
+              echo "Image HTTP status: $HTTP_CODE"
               echo "Raw image response:"
-              echo "$RESPONSE"
+              cat image-response.json
+              echo ""
 
-              if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
+              if [ "$HTTP_CODE" -lt 200 ] || \
+                 [ "$HTTP_CODE" -ge 300 ]; then
+                echo "Image endpoint failed."
+                exit 1
+              fi
+
+              if ! jq empty image-response.json >/dev/null 2>&1; then
                 echo "Image endpoint did not return valid JSON."
                 exit 1
               fi
 
-              echo "$RESPONSE" | jq .
+              OK=$(jq -r '.ok // false' image-response.json)
 
-              OK=$(echo "$RESPONSE" | jq -r '.ok // false')
+              HUB_COMPLETE=$(jq -r \
+                '.hub_complete // false' \
+                image-response.json)
 
-              HUB_COMPLETE=$(echo "$RESPONSE" | jq -r \
-                '.hub_complete // false')
+              COMPLETE_COUNT=$(jq -r \
+                '.image_complete_count // 0' \
+                image-response.json)
 
-              COMPLETE_COUNT=$(echo "$RESPONSE" | jq -r \
-                '.image_complete_count // 0')
+              INCOMPLETE_COUNT=$(jq -r \
+                '.image_incomplete_count // 0' \
+                image-response.json)
 
-              INCOMPLETE_COUNT=$(echo "$RESPONSE" | jq -r \
-  '.image_incomplete_count // 0')
-
-TOTAL_COUNT=$((COMPLETE_COUNT + INCOMPLETE_COUNT))
+              TOTAL_COUNT=$((COMPLETE_COUNT + INCOMPLETE_COUNT))
 
               if [ "$OK" != "true" ]; then
                 echo "Image Worker returned failure."
@@ -184,7 +210,7 @@ TOTAL_COUNT=$((COMPLETE_COUNT + INCOMPLETE_COUNT))
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
-                echo "Image hub complete: $COMPLETE_COUNT / $TOTAL_COUNT"
+                echo "Small image hub complete: $COMPLETE_COUNT / $TOTAL_COUNT"
                 break
               fi
 
@@ -194,13 +220,13 @@ TOTAL_COUNT=$((COMPLETE_COUNT + INCOMPLETE_COUNT))
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
               echo "Image hub did not complete within $MAX_CALLS_PER_HUB calls."
-              echo "Stopping. The next hub will not be claimed."
+              echo "The next hub will not be claimed."
               exit 1
             fi
 
             echo ""
             echo "========================================"
-            echo "IMAGE HUB COMPLETE"
+            echo "SMALL IMAGE HUB COMPLETE"
             echo "$HUB_NAME"
             echo "$FACTORY_HUB_ID"
             echo "Images: $COMPLETE_COUNT / $TOTAL_COUNT"
