@@ -1,4 +1,4 @@
-name: Factory Small Hubs
+name: Factory Micro Hubs
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ on:
         default: ""
 
 jobs:
-  run-small:
+  run-micro:
     runs-on: ubuntu-latest
 
     strategy:
@@ -33,7 +33,7 @@ jobs:
         worker: [1, 2, 3]
 
     steps:
-      - name: Run small hubs with limit
+      - name: Run micro hubs with limit
         shell: bash
         run: |
           set -euo pipefail
@@ -45,7 +45,7 @@ jobs:
           WORKER_NUMBER="${{ matrix.worker }}"
 
           echo "======================================"
-          echo "Factory Small Hubs"
+          echo "Factory micro Hubs"
           echo "Worker: $WORKER_NUMBER"
           echo "Max hubs for worker: $MAX_HUBS"
           echo "Max steps per hub: $MAX_STEPS"
@@ -79,7 +79,7 @@ jobs:
 
               if [ -z "$HUB_ID" ]; then
                 PAYLOAD=$(jq -n \
-                  --arg target_tier "small" \
+                  --arg target_tier "micro" \
                   --argjson pause_ms "$PAUSE_MS" \
                   '{
                     target_tier: $target_tier,
@@ -88,7 +88,7 @@ jobs:
               else
                 PAYLOAD=$(jq -n \
                   --arg factory_hub_id "$HUB_ID" \
-                  --arg target_tier "small" \
+                  --arg target_tier "micro" \
                   --argjson pause_ms "$PAUSE_MS" \
                   '{
                     factory_hub_id: $factory_hub_id,
@@ -123,7 +123,7 @@ jobs:
               fi
 
               if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' >/dev/null; then
-                echo "No pending Small hubs remain."
+                echo "No pending micro hubs remain."
                 exit 0
               fi
 
