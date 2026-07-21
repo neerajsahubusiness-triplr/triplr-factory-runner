@@ -1,6 +1,8 @@
 name: Enrich Medium Images
 
 on:
+  schedule:
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       hub_count:
@@ -47,12 +49,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          HUB_COUNT="${{ inputs.hub_count }}"
-          ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
-          MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
-          PAUSE_SECONDS="${{ inputs.pause_seconds }}"
-          TARGET_TIER="${{ inputs.target_tier }}"
-          FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
+         if [ "${{ github.event_name }}" = "schedule" ]; then
+  HUB_COUNT="15"
+  ACTIVITY_LIMIT="5"
+  MAX_CALLS_PER_HUB="20"
+  PAUSE_SECONDS="8"
+  TARGET_TIER="small"
+  FIXED_FACTORY_HUB_ID=""
+else
+  HUB_COUNT="${{ inputs.hub_count }}"
+  ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
+  MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
+  PAUSE_SECONDS="${{ inputs.pause_seconds }}"
+  TARGET_TIER="${{ inputs.target_tier }}"
+  FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
+fi
 
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
