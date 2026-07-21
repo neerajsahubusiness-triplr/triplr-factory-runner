@@ -4,7 +4,6 @@ on:
 schedule:
     # Runs every hour
     - cron: "0 * * * *"
-
   workflow_dispatch:
     inputs:
       hub_count:
