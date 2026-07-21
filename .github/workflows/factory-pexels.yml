@@ -36,9 +36,6 @@ on:
         required: false
         default: ""
 
-  schedule:
-    - cron: "17 * * * *"
-
 concurrency:
   group: factory-pexels-large-hourly
   cancel-in-progress: false
