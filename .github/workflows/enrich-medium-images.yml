@@ -1,4 +1,4 @@
-name: Enrich Medium Images
+name: Enrich Small Images
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       hub_count:
-        description: "How many Medium hubs to fully complete"
+        description: "How many Small hubs to fully complete"
         required: true
         default: "15"
 
@@ -44,27 +44,25 @@ jobs:
       FACTORY_TOKEN: ${{ secrets.FACTORY_ADMIN_TOKEN }}
 
     steps:
-      - name: Complete Medium hub images
+      - name: Complete Small hub images
         shell: bash
         run: |
           set -euo pipefail
-
-         if [ "${{ github.event_name }}" = "schedule" ]; then
-  HUB_COUNT="15"
-  ACTIVITY_LIMIT="5"
-  MAX_CALLS_PER_HUB="20"
-  PAUSE_SECONDS="8"
-  TARGET_TIER="small"
-  FIXED_FACTORY_HUB_ID=""
-else
-  HUB_COUNT="${{ inputs.hub_count }}"
-  ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
-  MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
-  PAUSE_SECONDS="${{ inputs.pause_seconds }}"
-  TARGET_TIER="${{ inputs.target_tier }}"
-  FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
-fi
-
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            HUB_COUNT="15"
+            ACTIVITY_LIMIT="5"
+            MAX_CALLS_PER_HUB="20"
+            PAUSE_SECONDS="8"
+            TARGET_TIER="small"
+            FIXED_FACTORY_HUB_ID=""
+          else
+            HUB_COUNT="${{ inputs.hub_count }}"
+            ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
+            MAX_CALLS_PER_HUB="${{ inputs.max_calls_per_hub }}"
+            PAUSE_SECONDS="${{ inputs.pause_seconds }}"
+            TARGET_TIER="${{ inputs.target_tier }}"
+            FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
+          fi
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
             echo "========================================"
@@ -123,7 +121,7 @@ fi
                 '.hub_name // "Unknown hub"')
 
               if [ -z "$FACTORY_HUB_ID" ]; then
-                echo "No pending Medium image hub found."
+                echo "No pending Small image hub found."
                 exit 0
               fi
             fi
@@ -172,19 +170,21 @@ fi
                 '.image_complete_count // 0')
 
               INCOMPLETE_COUNT=$(echo "$RESPONSE" | jq -r \
-                '.image_incomplete_count // 80')
+  '.image_incomplete_count // 0')
+
+TOTAL_COUNT=$((COMPLETE_COUNT + INCOMPLETE_COUNT))
 
               if [ "$OK" != "true" ]; then
                 echo "Image Worker returned failure."
                 exit 1
               fi
 
-              echo "Image progress: $COMPLETE_COUNT / 80"
+              echo "Image progress: $COMPLETE_COUNT / $TOTAL_COUNT"
               echo "Still incomplete: $INCOMPLETE_COUNT"
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
-                echo "Image hub complete: 80 / 80"
+                echo "Image hub complete: $COMPLETE_COUNT / $TOTAL_COUNT"
                 break
               fi
 
@@ -193,7 +193,7 @@ fi
 
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
-              echo "Image hub did not reach 80 / 80."
+              echo "Image hub did not complete within $MAX_CALLS_PER_HUB calls."
               echo "Stopping. The next hub will not be claimed."
               exit 1
             fi
@@ -203,7 +203,7 @@ fi
             echo "IMAGE HUB COMPLETE"
             echo "$HUB_NAME"
             echo "$FACTORY_HUB_ID"
-            echo "Images: 80 / 80"
+            echo "Images: $COMPLETE_COUNT / $TOTAL_COUNT"
             echo "========================================"
 
             if [ -n "$FIXED_FACTORY_HUB_ID" ]; then
