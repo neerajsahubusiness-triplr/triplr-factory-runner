@@ -6,7 +6,7 @@ on:
       hub_count:
         description: "How many hubs to fully complete"
         required: true
-        default: "1"
+        default: "3"
 
       activity_limit:
         description: "Activities per Worker call"
@@ -16,7 +16,7 @@ on:
       max_calls_per_hub:
         description: "Maximum Worker calls per hub"
         required: true
-        default: "35"
+        default: "20"
 
       pause_seconds:
         description: "Pause between calls"
