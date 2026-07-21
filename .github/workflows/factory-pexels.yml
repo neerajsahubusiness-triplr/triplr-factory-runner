@@ -2,7 +2,7 @@ name: Factory Pexels Enrichment Large
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "17 * * * *"
 
   workflow_dispatch:
     inputs:
