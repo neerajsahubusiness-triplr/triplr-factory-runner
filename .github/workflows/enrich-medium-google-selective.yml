@@ -1,0 +1,294 @@
+name: Enrich Medium Google Selective
+
+on:
+  workflow_dispatch:
+    inputs:
+      factory_hub_id:
+        description: "Optional fixed medium factory hub ID. Leave blank for automatic claim."
+        required: false
+        default: ""
+
+      hub_count:
+        description: "How many medium hubs to complete"
+        required: true
+        default: "1"
+
+      activity_limit:
+        description: "Google activities processed per Worker call"
+        required: true
+        default: "5"
+
+      target_per_cluster:
+        description: "Preferred Google-worthy activities per cluster"
+        required: true
+        default: "3"
+
+      max_per_cluster:
+        description: "Absolute maximum Google activities per cluster"
+        required: true
+        default: "4"
+
+      max_calls_per_hub:
+        description: "Safety limit for Worker calls per hub"
+        required: true
+        default: "20"
+
+      pause_seconds:
+        description: "Pause between Worker calls"
+        required: true
+        default: "10"
+
+jobs:
+  enrich-medium-google:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HUB_COUNT="${{ inputs.hub_count }}"
+          ACTIVITY_LIMIT="${{ inputs.activity_limit }}"
+          TARGET_PER_CLUSTER="${{ inputs.target_per_cluster }}"
+          MAX_PER_CLUSTER="${{ inputs.max_per_cluster }}"
+          MAX_CALLS="${{ inputs.max_calls_per_hub }}"
+          PAUSE_SECONDS="${{ inputs.pause_seconds }}"
+
+          if ! [[ "$HUB_COUNT" =~ ^[0-9]+$ ]] || [ "$HUB_COUNT" -lt 1 ]; then
+            echo "hub_count must be a positive integer"
+            exit 1
+          fi
+
+          if ! [[ "$ACTIVITY_LIMIT" =~ ^[0-9]+$ ]] || [ "$ACTIVITY_LIMIT" -lt 1 ] || [ "$ACTIVITY_LIMIT" -gt 10 ]; then
+            echo "activity_limit must be between 1 and 10"
+            exit 1
+          fi
+
+          if ! [[ "$TARGET_PER_CLUSTER" =~ ^[0-9]+$ ]] || [ "$TARGET_PER_CLUSTER" -lt 1 ] || [ "$TARGET_PER_CLUSTER" -gt 4 ]; then
+            echo "target_per_cluster must be between 1 and 4"
+            exit 1
+          fi
+
+          if ! [[ "$MAX_PER_CLUSTER" =~ ^[0-9]+$ ]] || [ "$MAX_PER_CLUSTER" -lt "$TARGET_PER_CLUSTER" ] || [ "$MAX_PER_CLUSTER" -gt 4 ]; then
+            echo "max_per_cluster must be between target_per_cluster and 4"
+            exit 1
+          fi
+
+          if ! [[ "$MAX_CALLS" =~ ^[0-9]+$ ]] || [ "$MAX_CALLS" -lt 1 ]; then
+            echo "max_calls_per_hub must be a positive integer"
+            exit 1
+          fi
+
+          if ! [[ "$PAUSE_SECONDS" =~ ^[0-9]+$ ]]; then
+            echo "pause_seconds must be zero or greater"
+            exit 1
+          fi
+
+      - name: Run selective medium Google enrichment
+        shell: bash
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
+
+          FIXED_HUB_ID: ${{ inputs.factory_hub_id }}
+          HUB_COUNT: ${{ inputs.hub_count }}
+          ACTIVITY_LIMIT: ${{ inputs.activity_limit }}
+          TARGET_PER_CLUSTER: ${{ inputs.target_per_cluster }}
+          MAX_PER_CLUSTER: ${{ inputs.max_per_cluster }}
+          MAX_CALLS_PER_HUB: ${{ inputs.max_calls_per_hub }}
+          PAUSE_SECONDS: ${{ inputs.pause_seconds }}
+
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FACTORY_BASE_URL:-}" ]; then
+            echo "Missing GitHub secret: FACTORY_BASE_URL"
+            exit 1
+          fi
+
+          BASE_URL="${FACTORY_BASE_URL%/}"
+          ENDPOINT="${BASE_URL}/factory/enrich-next-medium-google-places"
+
+          mkdir -p google-results
+
+          completed_hubs=0
+          active_hub_id="$FIXED_HUB_ID"
+          active_hub_name=""
+
+          echo "Selective Medium Google enrichment"
+          echo "Endpoint: $ENDPOINT"
+          echo "Requested hubs: $HUB_COUNT"
+          echo "Activity limit: $ACTIVITY_LIMIT"
+          echo "Target per cluster: $TARGET_PER_CLUSTER"
+          echo "Maximum per cluster: $MAX_PER_CLUSTER"
+
+          while [ "$completed_hubs" -lt "$HUB_COUNT" ]; do
+            echo ""
+            echo "=================================================="
+            echo "Starting hub $((completed_hubs + 1)) of $HUB_COUNT"
+            echo "=================================================="
+
+            hub_completed=false
+
+            for call_number in $(seq 1 "$MAX_CALLS_PER_HUB"); do
+              echo ""
+              echo "Worker call $call_number of $MAX_CALLS_PER_HUB"
+
+              if [ -n "$active_hub_id" ]; then
+                request_body=$(jq -n \
+                  --arg factory_hub_id "$active_hub_id" \
+                  --argjson activity_limit "$ACTIVITY_LIMIT" \
+                  --argjson target_per_cluster "$TARGET_PER_CLUSTER" \
+                  --argjson max_per_cluster "$MAX_PER_CLUSTER" \
+                  '{
+                    factory_hub_id: $factory_hub_id,
+                    hub_limit: 1,
+                    activity_limit: $activity_limit,
+                    target_per_cluster: $target_per_cluster,
+                    max_per_cluster: $max_per_cluster
+                  }')
+              else
+                request_body=$(jq -n \
+                  --argjson activity_limit "$ACTIVITY_LIMIT" \
+                  --argjson target_per_cluster "$TARGET_PER_CLUSTER" \
+                  --argjson max_per_cluster "$MAX_PER_CLUSTER" \
+                  '{
+                    hub_limit: 1,
+                    activity_limit: $activity_limit,
+                    target_per_cluster: $target_per_cluster,
+                    max_per_cluster: $max_per_cluster
+                  }')
+              fi
+
+              echo "Request:"
+              echo "$request_body" | jq .
+
+              response_file="google-results/response-hub-$((completed_hubs + 1))-call-${call_number}.json"
+              http_file="google-results/http-hub-$((completed_hubs + 1))-call-${call_number}.txt"
+
+              http_status=$(curl \
+                --silent \
+                --show-error \
+                --request POST \
+                --header "Content-Type: application/json" \
+                --data "$request_body" \
+                --output "$response_file" \
+                --write-out "%{http_code}" \
+                "$ENDPOINT")
+
+              echo "$http_status" > "$http_file"
+
+              echo "HTTP status: $http_status"
+              echo "Response:"
+              cat "$response_file" | jq . || cat "$response_file"
+
+              if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
+                echo "Worker returned HTTP $http_status"
+                exit 1
+              fi
+
+              ok=$(jq -r '.ok // false' "$response_file")
+
+              if [ "$ok" != "true" ]; then
+                error_message=$(jq -r '.error // .message // "Unknown Worker error"' "$response_file")
+                echo "Worker failed: $error_message"
+                exit 1
+              fi
+
+              no_pending=$(jq -r '.no_pending_hubs // false' "$response_file")
+
+              if [ "$no_pending" = "true" ]; then
+                echo "No pending medium Google hubs remain."
+
+                if [ "$completed_hubs" -eq 0 ]; then
+                  echo "Nothing was processed."
+                fi
+
+                exit 0
+              fi
+
+              returned_hub_id=$(jq -r '.hubs[0].factory_hub_id // empty' "$response_file")
+              returned_hub_name=$(jq -r '.hubs[0].hub_name // empty' "$response_file")
+
+              if [ -n "$returned_hub_id" ]; then
+                active_hub_id="$returned_hub_id"
+              fi
+
+              if [ -n "$returned_hub_name" ]; then
+                active_hub_name="$returned_hub_name"
+              fi
+
+              google_complete=$(jq -r '
+                .google_complete //
+                .hubs[0].google_complete //
+                false
+              ' "$response_file")
+
+              done_count=$(jq -r '.hubs[0].google_done_count // 0' "$response_file")
+              review_count=$(jq -r '.hubs[0].google_review_count // 0' "$response_file")
+              skipped_count=$(jq -r '.hubs[0].google_skipped_count // 0' "$response_file")
+              retryable_failed=$(jq -r '.hubs[0].google_retryable_failed_count // 0' "$response_file")
+              exhausted_failed=$(jq -r '.hubs[0].google_exhausted_failed_count // 0' "$response_file")
+              remaining_count=$(jq -r '.hubs[0].google_remaining_count // 0' "$response_file")
+              total_count=$(jq -r '.hubs[0].total_activities // 0' "$response_file")
+
+              echo ""
+              echo "Hub: ${active_hub_name:-Unknown}"
+              echo "Hub ID: ${active_hub_id:-Unknown}"
+              echo "Done: $done_count"
+              echo "Review: $review_count"
+              echo "Skipped: $skipped_count"
+              echo "Retryable failed: $retryable_failed"
+              echo "Exhausted failed: $exhausted_failed"
+              echo "Remaining: $remaining_count"
+              echo "Total activities: $total_count"
+              echo "Complete: $google_complete"
+
+              if [ "$google_complete" = "true" ]; then
+                completed_hubs=$((completed_hubs + 1))
+                hub_completed=true
+
+                echo ""
+                echo "Completed hub $completed_hubs of $HUB_COUNT:"
+                echo "${active_hub_name:-Unknown} (${active_hub_id:-Unknown})"
+
+                # A manually supplied fixed hub means only that hub should run.
+                if [ -n "$FIXED_HUB_ID" ]; then
+                  echo "Fixed hub completed."
+                  break 2
+                fi
+
+                active_hub_id=""
+                active_hub_name=""
+                break
+              fi
+
+              if [ "$call_number" -lt "$MAX_CALLS_PER_HUB" ]; then
+                echo "Waiting ${PAUSE_SECONDS}s before next call..."
+                sleep "$PAUSE_SECONDS"
+              fi
+            done
+
+            if [ "$hub_completed" != "true" ]; then
+              echo ""
+              echo "Hub did not complete within $MAX_CALLS_PER_HUB calls."
+              echo "Hub ID: ${active_hub_id:-Unknown}"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=================================================="
+          echo "Selective medium Google enrichment finished"
+          echo "Completed hubs: $completed_hubs"
+          echo "=================================================="
+
+      - name: Upload Worker responses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medium-google-selective-results
+          path: google-results/
+          if-no-files-found: ignore
+          retention-days: 7
