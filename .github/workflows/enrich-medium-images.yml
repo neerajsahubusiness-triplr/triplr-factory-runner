@@ -1,4 +1,4 @@
-name: Enrich Small Images
+name: Enrich Micro Images
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       hub_count:
-        description: "How many Small hubs to fully complete"
+        description: "How many Micro hubs to fully complete"
         required: true
         default: "15"
 
@@ -29,7 +29,7 @@ on:
       target_tier:
         description: "Tier"
         required: true
-        default: "small"
+        default: "micro"
 
       factory_hub_id:
         description: "Optional fixed Factory hub ID"
@@ -37,7 +37,7 @@ on:
         default: ""
 
 concurrency:
-  group: enrich-small-images-hourly
+  group: enrich-micro-images-hourly
   cancel-in-progress: false
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
       FACTORY_TOKEN: ${{ secrets.FACTORY_ADMIN_TOKEN }}
 
     steps:
-      - name: Complete Small hub images
+      - name: Complete Micro hub images
         shell: bash
         run: |
           set -euo pipefail
@@ -59,7 +59,7 @@ jobs:
             ACTIVITY_LIMIT="5"
             MAX_CALLS_PER_HUB="20"
             PAUSE_SECONDS="8"
-            TARGET_TIER="small"
+            TARGET_TIER="micro"
             FIXED_FACTORY_HUB_ID=""
           else
             HUB_COUNT="${{ inputs.hub_count }}"
@@ -73,7 +73,7 @@ jobs:
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
             echo "========================================"
-            echo "Starting Small image hub $HUB_NUMBER of $HUB_COUNT"
+            echo "Starting Micro image hub $HUB_NUMBER of $HUB_COUNT"
             echo "========================================"
 
             if [ -n "$FIXED_FACTORY_HUB_ID" ]; then
@@ -126,13 +126,13 @@ jobs:
                 claim-response.json)
 
               if [ -z "$FACTORY_HUB_ID" ]; then
-                echo "No pending Small image hub found."
+                echo "No pending Micro image hub found."
                 exit 0
               fi
             fi
 
             echo ""
-            echo "Locked Small image hub:"
+            echo "Locked Micro image hub:"
             echo "$HUB_NAME ($FACTORY_HUB_ID)"
 
             HUB_COMPLETE="false"
@@ -210,7 +210,7 @@ jobs:
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
-                echo "Small image hub complete: $COMPLETE_COUNT / $TOTAL_COUNT"
+                echo "Micro image hub complete: $COMPLETE_COUNT / $TOTAL_COUNT"
                 break
               fi
 
@@ -226,7 +226,7 @@ jobs:
 
             echo ""
             echo "========================================"
-            echo "SMALL IMAGE HUB COMPLETE"
+            echo "MICRO IMAGE HUB COMPLETE"
             echo "$HUB_NAME"
             echo "$FACTORY_HUB_ID"
             echo "Images: $COMPLETE_COUNT / $TOTAL_COUNT"
