@@ -1,0 +1,194 @@
+name: Enrich Premium Editorial
+
+on:
+  workflow_dispatch:
+    inputs:
+      hub_id:
+        description: "Hub UUID to process"
+        required: true
+        type: string
+
+      cluster_id:
+        description: "Cluster UUID — leave blank to process the next pending cluster"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: premium-editorial-${{ inputs.hub_id }}
+  cancel-in-progress: false
+
+jobs:
+  enrich-editorial:
+    name: Generate Premium Editorial
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HUB_ID="${{ inputs.hub_id }}"
+          CLUSTER_ID="${{ inputs.cluster_id }}"
+
+          if [[ -z "$HUB_ID" ]]; then
+            echo "::error::hub_id is required."
+            exit 1
+          fi
+
+          UUID_REGEX='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+
+          if [[ ! "$HUB_ID" =~ $UUID_REGEX ]]; then
+            echo "::error::hub_id is not a valid UUID: $HUB_ID"
+            exit 1
+          fi
+
+          if [[ -n "$CLUSTER_ID" && ! "$CLUSTER_ID" =~ $UUID_REGEX ]]; then
+            echo "::error::cluster_id is not a valid UUID: $CLUSTER_ID"
+            exit 1
+          fi
+
+          echo "Hub ID: $HUB_ID"
+
+          if [[ -n "$CLUSTER_ID" ]]; then
+            echo "Cluster ID: $CLUSTER_ID"
+          else
+            echo "Cluster ID: automatic selection of next pending/failed cluster"
+          fi
+
+      - name: Build request payload
+        id: payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HUB_ID="${{ inputs.hub_id }}"
+          CLUSTER_ID="${{ inputs.cluster_id }}"
+
+          if [[ -n "$CLUSTER_ID" ]]; then
+            PAYLOAD=$(jq -n \
+              --arg hub_id "$HUB_ID" \
+              --arg cluster_id "$CLUSTER_ID" \
+              '{
+                hub_id: $hub_id,
+                cluster_id: $cluster_id
+              }')
+          else
+            PAYLOAD=$(jq -n \
+              --arg hub_id "$HUB_ID" \
+              '{
+                hub_id: $hub_id
+              }')
+          fi
+
+          echo "$PAYLOAD" > request-payload.json
+
+          echo "Request payload:"
+          cat request-payload.json
+
+      - name: Run premium editorial enrichment
+        id: enrichment
+        shell: bash
+        env:
+          FACTORY_ENDPOINT: ${{ secrets.FACTORY_ENDPOINT }}
+          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
+        run: |
+          set -uo pipefail
+
+          if [[ -z "${FACTORY_ENDPOINT:-}" ]]; then
+            echo "::error::GitHub secret FACTORY_ENDPOINT is missing."
+            exit 1
+          fi
+
+          ENDPOINT="${FACTORY_ENDPOINT%/}/factory/enrich-premium-editorial"
+
+          echo "Calling Premium Editorial endpoint..."
+          echo "Endpoint: $ENDPOINT"
+
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --location \
+            --connect-timeout 30 \
+            --max-time 1500 \
+            --output response.json \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --header "Accept: application/json" \
+            --header "Authorization: Bearer ${FACTORY_API_KEY}" \
+            --data-binary @request-payload.json \
+            "$ENDPOINT")
+
+          CURL_EXIT_CODE=$?
+
+          echo "curl exit code: $CURL_EXIT_CODE"
+          echo "HTTP status: $HTTP_CODE"
+
+          echo ""
+          echo "Raw response:"
+          if [[ -s response.json ]]; then
+            cat response.json
+          else
+            echo "(No response body)"
+          fi
+
+          echo ""
+
+          if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" || "$HTTP_CODE" == "202" ]]; then
+            echo "Premium editorial request completed successfully."
+            exit 0
+          fi
+
+          if [[ "$HTTP_CODE" == "504" ]]; then
+            echo "::warning::Cloudflare returned 504, but the Worker may still complete and save the generated editorial."
+            echo "::warning::Check hub_activity_enhancements in Supabase before rerunning this cluster."
+            exit 0
+          fi
+
+          if [[ "$CURL_EXIT_CODE" == "28" ]]; then
+            echo "::warning::The client timed out, but the Worker may still be processing."
+            echo "::warning::Check hub_activity_enhancements in Supabase before rerunning."
+            exit 0
+          fi
+
+          echo "::error::Premium editorial enrichment failed with HTTP status $HTTP_CODE."
+          exit 1
+
+      - name: Upload execution response
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: premium-editorial-response-${{ github.run_number }}
+          path: |
+            request-payload.json
+            response.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Execution summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Premium Editorial Enrichment"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Hub ID | \`${{ inputs.hub_id }}\` |"
+
+            if [[ -n "${{ inputs.cluster_id }}" ]]; then
+              echo "| Cluster ID | \`${{ inputs.cluster_id }}\` |"
+            else
+              echo "| Cluster ID | Next pending/failed cluster |"
+            fi
+
+            echo "| Workflow run | \`${{ github.run_number }}\` |"
+            echo ""
+            echo "> A 504 may only mean the HTTP connection timed out. Check Supabase before running the same cluster again."
+          } >> "$GITHUB_STEP_SUMMARY"
