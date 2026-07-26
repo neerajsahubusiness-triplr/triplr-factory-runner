@@ -95,15 +95,9 @@ jobs:
         id: enrichment
         shell: bash
         env:
-          FACTORY_ENDPOINT: ${{ secrets.FACTORY_ENDPOINT }}
-          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
+          FACTORY_ENDPOINT: https://triplr-factory.neeraj-sahu-business.workers.dev
         run: |
           set -uo pipefail
-
-          if [[ -z "${FACTORY_ENDPOINT:-}" ]]; then
-            echo "::error::GitHub secret FACTORY_ENDPOINT is missing."
-            exit 1
-          fi
 
           ENDPOINT="${FACTORY_ENDPOINT%/}/factory/enrich-premium-editorial"
 
@@ -121,7 +115,6 @@ jobs:
             --request POST \
             --header "Content-Type: application/json" \
             --header "Accept: application/json" \
-            --header "Authorization: Bearer ${FACTORY_API_KEY}" \
             --data-binary @request-payload.json \
             "$ENDPOINT")
 
@@ -132,6 +125,7 @@ jobs:
 
           echo ""
           echo "Raw response:"
+
           if [[ -s response.json ]]; then
             cat response.json
           else
