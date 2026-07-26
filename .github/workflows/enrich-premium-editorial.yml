@@ -3,186 +3,246 @@ name: Enrich Premium Editorial
 on:
   workflow_dispatch:
     inputs:
-      hub_id:
-        description: "Hub UUID to process"
+      hub_limit:
+        description: "Number of complete hubs to process"
         required: true
-        type: string
-
-      cluster_id:
-        description: "Cluster UUID — leave blank to process the next pending cluster"
-        required: false
-        default: ""
+        default: "5"
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: premium-editorial-${{ inputs.hub_id }}
+  group: premium-editorial-automatic-rollout
   cancel-in-progress: false
 
 jobs:
   enrich-editorial:
     name: Generate Premium Editorial
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+
+    # Five hubs may contain many clusters.
+    timeout-minutes: 360
+
+    env:
+      FACTORY_ENDPOINT: https://triplr-factory.neeraj-sahu-business.workers.dev
 
     steps:
-      - name: Validate inputs
+      - name: Validate hub limit
         shell: bash
         run: |
           set -euo pipefail
 
-          HUB_ID="${{ inputs.hub_id }}"
-          CLUSTER_ID="${{ inputs.cluster_id }}"
+          HUB_LIMIT="${{ inputs.hub_limit }}"
 
-          if [[ -z "$HUB_ID" ]]; then
-            echo "::error::hub_id is required."
+          if [[ ! "$HUB_LIMIT" =~ ^[0-9]+$ ]]; then
+            echo "::error::hub_limit must be a whole number."
             exit 1
           fi
 
-          UUID_REGEX='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
-
-          if [[ ! "$HUB_ID" =~ $UUID_REGEX ]]; then
-            echo "::error::hub_id is not a valid UUID: $HUB_ID"
+          if (( HUB_LIMIT < 1 || HUB_LIMIT > 20 )); then
+            echo "::error::hub_limit must be between 1 and 20."
             exit 1
           fi
 
-          if [[ -n "$CLUSTER_ID" && ! "$CLUSTER_ID" =~ $UUID_REGEX ]]; then
-            echo "::error::cluster_id is not a valid UUID: $CLUSTER_ID"
-            exit 1
-          fi
+          echo "Requested complete hubs: $HUB_LIMIT"
 
-          echo "Hub ID: $HUB_ID"
-
-          if [[ -n "$CLUSTER_ID" ]]; then
-            echo "Cluster ID: $CLUSTER_ID"
-          else
-            echo "Cluster ID: automatic selection of next pending/failed cluster"
-          fi
-
-      - name: Build request payload
-        id: payload
+      - name: Run automatic premium editorial rollout
         shell: bash
         run: |
           set -euo pipefail
 
-          HUB_ID="${{ inputs.hub_id }}"
-          CLUSTER_ID="${{ inputs.cluster_id }}"
+          HUB_LIMIT="${{ inputs.hub_limit }}"
 
-          if [[ -n "$CLUSTER_ID" ]]; then
-            PAYLOAD=$(jq -n \
-              --arg hub_id "$HUB_ID" \
-              --arg cluster_id "$CLUSTER_ID" \
-              '{
-                hub_id: $hub_id,
-                cluster_id: $cluster_id
-              }')
-          else
-            PAYLOAD=$(jq -n \
-              --arg hub_id "$HUB_ID" \
-              '{
-                hub_id: $hub_id
-              }')
-          fi
+          CLAIM_ENDPOINT="${FACTORY_ENDPOINT%/}/factory/claim-next-premium-editorial-hub"
+          ENRICH_ENDPOINT="${FACTORY_ENDPOINT%/}/factory/enrich-premium-editorial"
 
-          echo "$PAYLOAD" > request-payload.json
+          COMPLETED_HUBS=0
 
-          echo "Request payload:"
-          cat request-payload.json
+          echo "========================================"
+          echo "Premium Editorial Automatic Rollout"
+          echo "Target hubs: $HUB_LIMIT"
+          echo "========================================"
 
-      - name: Run premium editorial enrichment
-        id: enrichment
-        shell: bash
-        env:
-          FACTORY_ENDPOINT: https://triplr-factory.neeraj-sahu-business.workers.dev
-        run: |
-          set -uo pipefail
+          while (( COMPLETED_HUBS < HUB_LIMIT )); do
+            echo ""
+            echo "----------------------------------------"
+            echo "Claiming hub $((COMPLETED_HUBS + 1)) / $HUB_LIMIT"
+            echo "----------------------------------------"
 
-          ENDPOINT="${FACTORY_ENDPOINT%/}/factory/enrich-premium-editorial"
+            CLAIM_HTTP_CODE=$(curl \
+              --silent \
+              --show-error \
+              --location \
+              --connect-timeout 30 \
+              --max-time 120 \
+              --output claim-response.json \
+              --write-out "%{http_code}" \
+              --request POST \
+              --header "Content-Type: application/json" \
+              --header "Accept: application/json" \
+              --data '{}' \
+              "$CLAIM_ENDPOINT")
 
-          echo "Calling Premium Editorial endpoint..."
-          echo "Endpoint: $ENDPOINT"
+            echo "Claim HTTP status: $CLAIM_HTTP_CODE"
+            cat claim-response.json
+            echo ""
 
-          HTTP_CODE=$(curl \
-            --silent \
-            --show-error \
-            --location \
-            --connect-timeout 30 \
-            --max-time 1500 \
-            --output response.json \
-            --write-out "%{http_code}" \
-            --request POST \
-            --header "Content-Type: application/json" \
-            --header "Accept: application/json" \
-            --data-binary @request-payload.json \
-            "$ENDPOINT")
+            if [[ "$CLAIM_HTTP_CODE" != "200" ]]; then
+              echo "::error::Could not claim the next premium editorial hub."
+              exit 1
+            fi
 
-          CURL_EXIT_CODE=$?
+            CLAIM_OK=$(jq -r '.ok // false' claim-response.json)
+            NO_PENDING=$(jq -r '.no_pending_hubs // false' claim-response.json)
 
-          echo "curl exit code: $CURL_EXIT_CODE"
-          echo "HTTP status: $HTTP_CODE"
+            if [[ "$CLAIM_OK" != "true" ]]; then
+              echo "::error::Claim endpoint returned ok=false."
+              exit 1
+            fi
+
+            if [[ "$NO_PENDING" == "true" ]]; then
+              echo "No pending premium editorial hubs remain."
+              break
+            fi
+
+            HUB_ID=$(jq -r '.hub_id // empty' claim-response.json)
+            HUB_NAME=$(jq -r '.hub_name // "Unknown hub"' claim-response.json)
+            PENDING_CLUSTERS=$(jq -r '.pending_cluster_count // 0' claim-response.json)
+
+            if [[ -z "$HUB_ID" ]]; then
+              echo "::error::Claim response did not include hub_id."
+              exit 1
+            fi
+
+            echo ""
+            echo "Selected hub: $HUB_NAME"
+            echo "Hub ID: $HUB_ID"
+            echo "Pending clusters: $PENDING_CLUSTERS"
+
+            CLUSTER_RUN=0
+            MAX_CLUSTER_RUNS=40
+
+            while true; do
+              CLUSTER_RUN=$((CLUSTER_RUN + 1))
+
+              if (( CLUSTER_RUN > MAX_CLUSTER_RUNS )); then
+                echo "::error::Hub exceeded $MAX_CLUSTER_RUNS cluster calls. Stopping to prevent an infinite loop."
+                exit 1
+              fi
+
+              echo ""
+              echo "Generating next cluster for $HUB_NAME"
+              echo "Cluster call: $CLUSTER_RUN"
+
+              jq -n \
+                --arg hub_id "$HUB_ID" \
+                '{
+                  hub_id: $hub_id
+                }' > enrichment-request.json
+
+              set +e
+
+              ENRICH_HTTP_CODE=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --connect-timeout 30 \
+                --max-time 1500 \
+                --output enrichment-response.json \
+                --write-out "%{http_code}" \
+                --request POST \
+                --header "Content-Type: application/json" \
+                --header "Accept: application/json" \
+                --data-binary @enrichment-request.json \
+                "$ENRICH_ENDPOINT")
+
+              CURL_EXIT_CODE=$?
+
+              set -e
+
+              echo "curl exit code: $CURL_EXIT_CODE"
+              echo "HTTP status: $ENRICH_HTTP_CODE"
+
+              if [[ -s enrichment-response.json ]]; then
+                cat enrichment-response.json
+              else
+                echo "(No response body)"
+              fi
+
+              echo ""
+
+              if [[ "$CURL_EXIT_CODE" == "28" || "$ENRICH_HTTP_CODE" == "504" ]]; then
+                echo "::warning::Request timed out. Waiting before checking the hub again."
+                sleep 120
+                continue
+              fi
+
+              if [[ "$ENRICH_HTTP_CODE" != "200" ]]; then
+                ERROR_MESSAGE=$(jq -r '.error // "Unknown enrichment error"' enrichment-response.json 2>/dev/null || echo "Unknown enrichment error")
+
+                echo "::error::Premium editorial generation failed: $ERROR_MESSAGE"
+                exit 1
+              fi
+
+              RESPONSE_OK=$(jq -r '.ok // false' enrichment-response.json)
+
+              if [[ "$RESPONSE_OK" != "true" ]]; then
+                ERROR_MESSAGE=$(jq -r '.error // "Worker returned ok=false"' enrichment-response.json)
+
+                echo "::error::$ERROR_MESSAGE"
+                exit 1
+              fi
+
+              EDITORIAL_COMPLETE=$(jq -r '.editorial_complete // false' enrichment-response.json)
+
+              if [[ "$EDITORIAL_COMPLETE" == "true" ]]; then
+                echo ""
+                echo "========================================"
+                echo "Hub completed: $HUB_NAME"
+                echo "Cluster calls: $((CLUSTER_RUN - 1))"
+                echo "========================================"
+
+                COMPLETED_HUBS=$((COMPLETED_HUBS + 1))
+                break
+              fi
+
+              CLUSTER_NAME=$(jq -r '.cluster_name // "Unknown cluster"' enrichment-response.json)
+              ACTIVITIES_GENERATED=$(jq -r '.activities_generated // 0' enrichment-response.json)
+
+              echo "Generated cluster: $CLUSTER_NAME"
+              echo "Activities generated: $ACTIVITIES_GENERATED"
+
+              sleep 10
+            done
+          done
 
           echo ""
-          echo "Raw response:"
+          echo "========================================"
+          echo "Premium Editorial Rollout Finished"
+          echo "Completed hubs: $COMPLETED_HUBS"
+          echo "Requested hubs: $HUB_LIMIT"
+          echo "========================================"
 
-          if [[ -s response.json ]]; then
-            cat response.json
-          else
-            echo "(No response body)"
-          fi
+          {
+            echo "## Premium Editorial Rollout"
+            echo ""
+            echo "| Field | Result |"
+            echo "|---|---|"
+            echo "| Requested hubs | $HUB_LIMIT |"
+            echo "| Completed hubs | $COMPLETED_HUBS |"
+            echo "| Selection | Automatic |"
+            echo "| Cluster selection | Automatic |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          echo ""
-
-          if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" || "$HTTP_CODE" == "202" ]]; then
-            echo "Premium editorial request completed successfully."
-            exit 0
-          fi
-
-          if [[ "$HTTP_CODE" == "504" ]]; then
-            echo "::warning::Cloudflare returned 504, but the Worker may still complete and save the generated editorial."
-            echo "::warning::Check hub_activity_enhancements in Supabase before rerunning this cluster."
-            exit 0
-          fi
-
-          if [[ "$CURL_EXIT_CODE" == "28" ]]; then
-            echo "::warning::The client timed out, but the Worker may still be processing."
-            echo "::warning::Check hub_activity_enhancements in Supabase before rerunning."
-            exit 0
-          fi
-
-          echo "::error::Premium editorial enrichment failed with HTTP status $HTTP_CODE."
-          exit 1
-
-      - name: Upload execution response
+      - name: Upload final execution files
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: premium-editorial-response-${{ github.run_number }}
+          name: premium-editorial-rollout-${{ github.run_number }}
           path: |
-            request-payload.json
-            response.json
+            claim-response.json
+            enrichment-request.json
+            enrichment-response.json
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Execution summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "## Premium Editorial Enrichment"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Hub ID | \`${{ inputs.hub_id }}\` |"
-
-            if [[ -n "${{ inputs.cluster_id }}" ]]; then
-              echo "| Cluster ID | \`${{ inputs.cluster_id }}\` |"
-            else
-              echo "| Cluster ID | Next pending/failed cluster |"
-            fi
-
-            echo "| Workflow run | \`${{ github.run_number }}\` |"
-            echo ""
-            echo "> A 504 may only mean the HTTP connection timed out. Check Supabase before running the same cluster again."
-          } >> "$GITHUB_STEP_SUMMARY"
