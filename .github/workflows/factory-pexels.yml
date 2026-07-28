@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       hub_count:
-        description: "How many Medium hubs to fully complete"
+        description: "Medium hubs per parallel worker"
         required: true
         default: "3"
 
@@ -32,7 +32,7 @@ on:
         default: "medium"
 
       fixed_hub_id:
-        description: "Optional fixed canonical hub ID"
+        description: "Optional fixed canonical hub ID — use only for single-worker testing"
         required: false
         default: ""
 
@@ -44,9 +44,21 @@ jobs:
   pexels-enrichment:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - worker_id: pexels-medium-worker-1
+            key_slot: 1
+          - worker_id: pexels-medium-worker-2
+            key_slot: 2
+
     env:
       FACTORY_URL: https://triplr-factory.neeraj-sahu-business.workers.dev
       FACTORY_TOKEN: ${{ secrets.FACTORY_ADMIN_TOKEN }}
+      WORKER_ID: ${{ matrix.worker_id }}
+      PEXELS_KEY_SLOT: ${{ matrix.key_slot }}
 
     steps:
       - name: Complete Pexels Medium hubs
@@ -90,6 +102,11 @@ jobs:
             exit 1
           fi
 
+          if ! [[ "$PEXELS_KEY_SLOT" =~ ^[12]$ ]]; then
+            echo "PEXELS_KEY_SLOT must be 1 or 2."
+            exit 1
+          fi
+
           TIER_JSON=$(printf '%s' "$TIERS" \
             | tr ',' '\n' \
             | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
@@ -104,38 +121,59 @@ jobs:
             exit 1
           fi
 
-          echo "Configuration:"
-          echo "Hub count: $HUB_COUNT"
+          echo "========================================"
+          echo "PEXELS PARALLEL WORKER CONFIGURATION"
+          echo "Worker ID: $WORKER_ID"
+          echo "Pexels key slot: $PEXELS_KEY_SLOT"
+          echo "Hub count for this worker: $HUB_COUNT"
           echo "Activity limit: $ACTIVITY_LIMIT"
           echo "Maximum calls per hub: $MAX_CALLS_PER_HUB"
           echo "Pause seconds: $PAUSE_SECONDS"
           echo "Tiers: $TIER_JSON"
           echo "Fixed hub ID: ${FIXED_HUB_ID:-none}"
+          echo "========================================"
+
+          if [ -n "$FIXED_HUB_ID" ] && [ "$PEXELS_KEY_SLOT" != "1" ]; then
+            echo "Fixed hub testing runs only on worker 1."
+            exit 0
+          fi
 
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
             echo "========================================"
-            echo "Starting Pexels Medium hub $HUB_NUMBER / $HUB_COUNT"
+            echo "Worker: $WORKER_ID"
+            echo "Starting Medium hub $HUB_NUMBER / $HUB_COUNT"
+            echo "Key slot: $PEXELS_KEY_SLOT"
             echo "========================================"
 
             if [ -n "$FIXED_HUB_ID" ]; then
               CLAIM_BODY=$(jq -n \
                 --arg hub_id "$FIXED_HUB_ID" \
                 --argjson tiers "$TIER_JSON" \
+                --arg worker_id "$WORKER_ID" \
+                --argjson pexels_key_slot "$PEXELS_KEY_SLOT" \
                 '{
                   hub_id: $hub_id,
-                  tiers: $tiers
+                  tiers: $tiers,
+                  worker_id: $worker_id,
+                  pexels_key_slot: $pexels_key_slot
                 }')
             else
               CLAIM_BODY=$(jq -n \
                 --argjson tiers "$TIER_JSON" \
+                --arg worker_id "$WORKER_ID" \
+                --argjson pexels_key_slot "$PEXELS_KEY_SLOT" \
                 '{
-                  tiers: $tiers
+                  tiers: $tiers,
+                  worker_id: $worker_id,
+                  pexels_key_slot: $pexels_key_slot
                 }')
             fi
 
+            CLAIM_RESPONSE_FILE="pexels-claim-response-${PEXELS_KEY_SLOT}.json"
+
             CLAIM_HTTP_CODE=$(curl -sS \
-              -o pexels-claim-response.json \
+              -o "$CLAIM_RESPONSE_FILE" \
               -w "%{http_code}" \
               -X POST \
               "$FACTORY_URL/factory/claim-pexels-hub" \
@@ -145,7 +183,7 @@ jobs:
 
             echo "Claim HTTP status: $CLAIM_HTTP_CODE"
             echo "Claim response:"
-            cat pexels-claim-response.json
+            cat "$CLAIM_RESPONSE_FILE"
             echo ""
 
             if [ "$CLAIM_HTTP_CODE" -lt 200 ] || \
@@ -154,36 +192,47 @@ jobs:
               exit 1
             fi
 
-            if ! jq empty pexels-claim-response.json >/dev/null 2>&1; then
+            if ! jq empty "$CLAIM_RESPONSE_FILE" >/dev/null 2>&1; then
               echo "Claim response is not valid JSON."
               exit 1
             fi
 
             CLAIM_OK=$(jq -r \
               '.ok // false' \
-              pexels-claim-response.json)
+              "$CLAIM_RESPONSE_FILE")
 
             if [ "$CLAIM_OK" != "true" ]; then
               echo "Pexels claim returned failure."
               exit 1
             fi
 
+            NO_PENDING=$(jq -r \
+              '.no_pending_hubs // false' \
+              "$CLAIM_RESPONSE_FILE")
+
+            if [ "$NO_PENDING" = "true" ]; then
+              echo "No pending Medium Pexels hubs found."
+              exit 0
+            fi
+
             HUB_ID=$(jq -r \
               '.hub_id // empty' \
-              pexels-claim-response.json)
+              "$CLAIM_RESPONSE_FILE")
 
             HUB_NAME=$(jq -r \
               '.hub_name // "Unknown hub"' \
-              pexels-claim-response.json)
+              "$CLAIM_RESPONSE_FILE")
 
             if [ -z "$HUB_ID" ]; then
-              echo "No pending Medium Pexels hubs found."
-              exit 0
+              echo "Claim succeeded but returned no hub_id."
+              exit 1
             fi
 
             echo ""
             echo "Locked Pexels Medium hub:"
             echo "$HUB_NAME ($HUB_ID)"
+            echo "Worker: $WORKER_ID"
+            echo "Key slot: $PEXELS_KEY_SLOT"
 
             HUB_COMPLETE="false"
             COMPLETED="0"
@@ -195,6 +244,8 @@ jobs:
               echo ""
               echo "----------------------------------------"
               echo "Pexels call $CALL_NUMBER / $MAX_CALLS_PER_HUB"
+              echo "Worker: $WORKER_ID"
+              echo "Key slot: $PEXELS_KEY_SLOT"
               echo "Hub: $HUB_ID"
               echo "Activity limit: $ACTIVITY_LIMIT"
               echo "----------------------------------------"
@@ -202,13 +253,19 @@ jobs:
               BODY=$(jq -n \
                 --arg hub_id "$HUB_ID" \
                 --argjson activity_limit "$ACTIVITY_LIMIT" \
+                --arg worker_id "$WORKER_ID" \
+                --argjson pexels_key_slot "$PEXELS_KEY_SLOT" \
                 '{
                   hub_id: $hub_id,
-                  activity_limit: $activity_limit
+                  activity_limit: $activity_limit,
+                  worker_id: $worker_id,
+                  pexels_key_slot: $pexels_key_slot
                 }')
 
+              RESPONSE_FILE="pexels-response-${PEXELS_KEY_SLOT}.json"
+
               HTTP_CODE=$(curl -sS \
-                -o pexels-response.json \
+                -o "$RESPONSE_FILE" \
                 -w "%{http_code}" \
                 -X POST \
                 "$FACTORY_URL/factory/enrich-next-pexels" \
@@ -218,7 +275,7 @@ jobs:
 
               echo "HTTP status: $HTTP_CODE"
               echo "Pexels response:"
-              cat pexels-response.json
+              cat "$RESPONSE_FILE"
               echo ""
 
               if [ "$HTTP_CODE" -lt 200 ] || \
@@ -227,40 +284,63 @@ jobs:
                 exit 1
               fi
 
-              if ! jq empty pexels-response.json >/dev/null 2>&1; then
+              if ! jq empty "$RESPONSE_FILE" >/dev/null 2>&1; then
                 echo "Pexels response is not valid JSON."
                 exit 1
               fi
 
               OK=$(jq -r \
                 '.ok // false' \
-                pexels-response.json)
+                "$RESPONSE_FILE")
+
+              RESPONSE_KEY_SLOT=$(jq -r \
+                '.pexels_key_slot // empty' \
+                "$RESPONSE_FILE")
+
+              RESPONSE_WORKER_ID=$(jq -r \
+                '.worker_id // empty' \
+                "$RESPONSE_FILE")
 
               HUB_COMPLETE=$(jq -r \
                 '.hub_complete // false' \
-                pexels-response.json)
+                "$RESPONSE_FILE")
 
               COMPLETED=$(jq -r \
                 '.completed_activities // 0' \
-                pexels-response.json)
+                "$RESPONSE_FILE")
 
               TOTAL=$(jq -r \
                 '.total_activities // 0' \
-                pexels-response.json)
+                "$RESPONSE_FILE")
 
               INCOMPLETE=$(jq -r \
                 '.incomplete_activities // 0' \
-                pexels-response.json)
+                "$RESPONSE_FILE")
 
               FAILED=$(jq -r \
                 '.failed_activities // 0' \
-                pexels-response.json)
+                "$RESPONSE_FILE")
 
               if [ "$OK" != "true" ]; then
                 echo "Pexels Worker returned failure."
                 exit 1
               fi
 
+              if [ "$RESPONSE_KEY_SLOT" != "$PEXELS_KEY_SLOT" ]; then
+                echo "Wrong Pexels key slot returned."
+                echo "Expected: $PEXELS_KEY_SLOT"
+                echo "Received: ${RESPONSE_KEY_SLOT:-missing}"
+                exit 1
+              fi
+
+              if [ -n "$RESPONSE_WORKER_ID" ] && \
+                 [ "$RESPONSE_WORKER_ID" != "$WORKER_ID" ]; then
+                echo "Wrong worker_id returned."
+                exit 1
+              fi
+
+              echo "Worker: $WORKER_ID"
+              echo "Confirmed key slot: $RESPONSE_KEY_SLOT"
               echo "Pexels progress: $COMPLETED / $TOTAL"
               echo "Incomplete activities: $INCOMPLETE"
               echo "Failed activities: $FAILED"
@@ -277,6 +357,8 @@ jobs:
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
               echo "Pexels Medium hub did not complete within $MAX_CALLS_PER_HUB calls."
+              echo "Worker: $WORKER_ID"
+              echo "Key slot: $PEXELS_KEY_SLOT"
               echo "Completed: $COMPLETED / $TOTAL"
               echo "Incomplete: $INCOMPLETE"
               echo "Failed: $FAILED"
@@ -287,6 +369,8 @@ jobs:
             echo ""
             echo "========================================"
             echo "PEXELS MEDIUM HUB COMPLETE"
+            echo "Worker: $WORKER_ID"
+            echo "Key slot: $PEXELS_KEY_SLOT"
             echo "$HUB_NAME"
             echo "$HUB_ID"
             echo "Activities: $COMPLETED / $TOTAL"
