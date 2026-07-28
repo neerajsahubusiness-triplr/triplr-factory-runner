@@ -173,11 +173,26 @@ jobs:
               cat image-response.json
               echo ""
 
-              if [ "$HTTP_CODE" -lt 200 ] || \
-                 [ "$HTTP_CODE" -ge 300 ]; then
-                echo "Image endpoint failed."
-                exit 1
-              fi
+             if [ "$HTTP_CODE" -lt 200 ] || \
+   [ "$HTTP_CODE" -ge 300 ]; then
+
+  ERROR_TEXT=$(jq -r \
+    '.error // "Unknown Worker error"' \
+    image-response.json 2>/dev/null || true)
+
+  echo "Image endpoint failed: $ERROR_TEXT"
+
+  if echo "$ERROR_TEXT" | grep -qi \
+    "Too many subrequests"; then
+
+    echo "Cloudflare subrequest limit reached."
+    echo "Waiting 20 seconds before continuing."
+    sleep 20
+    continue
+  fi
+
+  exit 1
+fi
 
               if ! jq empty image-response.json >/dev/null 2>&1; then
                 echo "Image endpoint did not return valid JSON."
