@@ -14,12 +14,12 @@ on:
       activity_limit:
         description: "Activities per Worker call"
         required: true
-        default: "5"
+        default: "4"
 
       max_calls_per_hub:
         description: "Maximum Worker calls per hub"
         required: true
-        default: "20"
+        default: "25"
 
       pause_seconds:
         description: "Pause between calls"
@@ -43,6 +43,7 @@ concurrency:
 jobs:
   enrich-images:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     env:
       FACTORY_URL: https://triplr-factory.neeraj-sahu-business.workers.dev
@@ -56,8 +57,8 @@ jobs:
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
             HUB_COUNT="15"
-            ACTIVITY_LIMIT="5"
-            MAX_CALLS_PER_HUB="20"
+            ACTIVITY_LIMIT="4"
+            MAX_CALLS_PER_HUB="25"
             PAUSE_SECONDS="8"
             TARGET_TIER="micro"
             FIXED_FACTORY_HUB_ID=""
@@ -69,6 +70,42 @@ jobs:
             TARGET_TIER="${{ inputs.target_tier }}"
             FIXED_FACTORY_HUB_ID="${{ inputs.factory_hub_id }}"
           fi
+
+          if ! [[ "$HUB_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "hub_count must be a positive integer."
+            exit 1
+          fi
+
+          if ! [[ "$ACTIVITY_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "activity_limit must be a positive integer."
+            exit 1
+          fi
+
+          if ! [[ "$MAX_CALLS_PER_HUB" =~ ^[1-9][0-9]*$ ]]; then
+            echo "max_calls_per_hub must be a positive integer."
+            exit 1
+          fi
+
+          if ! [[ "$PAUSE_SECONDS" =~ ^[0-9]+$ ]]; then
+            echo "pause_seconds must be zero or a positive integer."
+            exit 1
+          fi
+
+          if [ -z "$TARGET_TIER" ]; then
+            echo "target_tier is required."
+            exit 1
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "MICRO IMAGE ENRICHMENT CONFIGURATION"
+          echo "Hub count: $HUB_COUNT"
+          echo "Activity limit: $ACTIVITY_LIMIT"
+          echo "Maximum calls per hub: $MAX_CALLS_PER_HUB"
+          echo "Pause seconds: $PAUSE_SECONDS"
+          echo "Target tier: $TARGET_TIER"
+          echo "Fixed hub: ${FIXED_FACTORY_HUB_ID:-none}"
+          echo "========================================"
 
           for HUB_NUMBER in $(seq 1 "$HUB_COUNT"); do
             echo ""
@@ -83,16 +120,22 @@ jobs:
               echo "Using fixed Factory hub ID:"
               echo "$FACTORY_HUB_ID"
             else
+              CLAIM_BODY=$(jq -n \
+                --arg target_tier "$TARGET_TIER" \
+                '{
+                  target_tier: $target_tier
+                }')
+
               CLAIM_HTTP_CODE=$(curl -sS \
+                --connect-timeout 30 \
+                --max-time 120 \
                 -o claim-response.json \
                 -w "%{http_code}" \
                 -X POST \
                 "$FACTORY_URL/factory/claim-image-hub" \
                 -H "Content-Type: application/json" \
                 -H "x-factory-token: $FACTORY_TOKEN" \
-                --data "{
-                  \"target_tier\": \"$TARGET_TIER\"
-                }")
+                --data "$CLAIM_BODY")
 
               echo "Claim HTTP status: $CLAIM_HTTP_CODE"
               echo "Raw claim response:"
@@ -110,7 +153,9 @@ jobs:
                 exit 1
               fi
 
-              CLAIM_OK=$(jq -r '.ok // false' claim-response.json)
+              CLAIM_OK=$(jq -r \
+                '.ok // false' \
+                claim-response.json)
 
               if [ "$CLAIM_OK" != "true" ]; then
                 echo "Hub claim failed."
@@ -139,6 +184,8 @@ jobs:
             COMPLETE_COUNT="0"
             INCOMPLETE_COUNT="0"
             TOTAL_COUNT="0"
+            SUCCESSFUL_CALLS="0"
+            SUBREQUEST_RETRIES="0"
 
             for CALL_NUMBER in $(seq 1 "$MAX_CALLS_PER_HUB"); do
               echo ""
@@ -160,6 +207,8 @@ jobs:
                 }')
 
               HTTP_CODE=$(curl -sS \
+                --connect-timeout 30 \
+                --max-time 300 \
                 -o image-response.json \
                 -w "%{http_code}" \
                 -X POST \
@@ -173,33 +222,57 @@ jobs:
               cat image-response.json
               echo ""
 
-             if [ "$HTTP_CODE" -lt 200 ] || \
-   [ "$HTTP_CODE" -ge 300 ]; then
+              if [ "$HTTP_CODE" -lt 200 ] || \
+                 [ "$HTTP_CODE" -ge 300 ]; then
 
-  ERROR_TEXT=$(jq -r \
-    '.error // "Unknown Worker error"' \
-    image-response.json 2>/dev/null || true)
+                ERROR_TEXT=$(jq -r \
+                  '.error // "Unknown Worker error"' \
+                  image-response.json 2>/dev/null || echo "Unknown Worker error")
 
-  echo "Image endpoint failed: $ERROR_TEXT"
+                echo "Image endpoint failed: $ERROR_TEXT"
 
-  if echo "$ERROR_TEXT" | grep -qi \
-    "Too many subrequests"; then
+                if echo "$ERROR_TEXT" | grep -qi \
+                  "Too many subrequests"; then
 
-    echo "Cloudflare subrequest limit reached."
-    echo "Waiting 20 seconds before continuing."
-    sleep 20
-    continue
-  fi
+                  SUBREQUEST_RETRIES=$((SUBREQUEST_RETRIES + 1))
 
-  exit 1
-fi
+                  echo "Cloudflare subrequest limit reached."
+                  echo "Subrequest retry: $SUBREQUEST_RETRIES / 5"
+
+                  if [ "$SUBREQUEST_RETRIES" -ge 5 ]; then
+                    echo "Too many consecutive Cloudflare subrequest failures."
+                    exit 1
+                  fi
+
+                  echo "Waiting 30 seconds before retrying the same hub."
+                  sleep 30
+                  continue
+                fi
+
+                echo "Non-retryable image endpoint failure."
+                exit 1
+              fi
 
               if ! jq empty image-response.json >/dev/null 2>&1; then
                 echo "Image endpoint did not return valid JSON."
                 exit 1
               fi
 
-              OK=$(jq -r '.ok // false' image-response.json)
+              OK=$(jq -r \
+                '.ok // false' \
+                image-response.json)
+
+              if [ "$OK" != "true" ]; then
+                ERROR_TEXT=$(jq -r \
+                  '.error // "Image Worker returned failure"' \
+                  image-response.json)
+
+                echo "$ERROR_TEXT"
+                exit 1
+              fi
+
+              SUBREQUEST_RETRIES="0"
+              SUCCESSFUL_CALLS=$((SUCCESSFUL_CALLS + 1))
 
               HUB_COMPLETE=$(jq -r \
                 '.hub_complete // false' \
@@ -215,18 +288,57 @@ fi
 
               TOTAL_COUNT=$((COMPLETE_COUNT + INCOMPLETE_COUNT))
 
-              if [ "$OK" != "true" ]; then
-                echo "Image Worker returned failure."
-                exit 1
-              fi
+              PROCESSED_COUNT=$(jq -r \
+                '.total_processed // 0' \
+                image-response.json)
 
+              SUCCESS_COUNT=$(jq -r \
+                '.total_success // 0' \
+                image-response.json)
+
+              FAILED_COUNT=$(jq -r \
+                '.total_failed // 0' \
+                image-response.json)
+
+              PICKED_COUNT=$(jq -r \
+                '.hubs[0].picked // 0' \
+                image-response.json)
+
+              PENDING_COUNT=$(jq -r \
+                '.hubs[0].pending_count // 0' \
+                image-response.json)
+
+              ACTIVITY_FAILED_COUNT=$(jq -r \
+                '.hubs[0].failed_count // 0' \
+                image-response.json)
+
+              echo "Successful Worker calls: $SUCCESSFUL_CALLS"
+              echo "Processed this call: $PROCESSED_COUNT"
+              echo "Successful this call: $SUCCESS_COUNT"
+              echo "Failed this call: $FAILED_COUNT"
+              echo "Picked this call: $PICKED_COUNT"
               echo "Image progress: $COMPLETE_COUNT / $TOTAL_COUNT"
               echo "Still incomplete: $INCOMPLETE_COUNT"
+              echo "Pending activities: $PENDING_COUNT"
+              echo "Failed activities: $ACTIVITY_FAILED_COUNT"
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
                 echo "Micro image hub complete: $COMPLETE_COUNT / $TOTAL_COUNT"
                 break
+              fi
+
+              if [ "$PICKED_COUNT" -eq 0 ] && \
+                 [ "$PENDING_COUNT" -eq 0 ] && \
+                 [ "$ACTIVITY_FAILED_COUNT" -gt 0 ]; then
+
+                echo ""
+                echo "Hub cannot make further progress."
+                echo "All remaining activities are in failed status."
+                echo "Factory hub: $FACTORY_HUB_ID"
+                echo "Completed: $COMPLETE_COUNT / $TOTAL_COUNT"
+                echo "Failed activities: $ACTIVITY_FAILED_COUNT"
+                exit 1
               fi
 
               sleep "$PAUSE_SECONDS"
@@ -235,6 +347,10 @@ fi
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
               echo "Image hub did not complete within $MAX_CALLS_PER_HUB calls."
+              echo "Hub: $HUB_NAME"
+              echo "Factory hub ID: $FACTORY_HUB_ID"
+              echo "Completed: $COMPLETE_COUNT / $TOTAL_COUNT"
+              echo "Still incomplete: $INCOMPLETE_COUNT"
               echo "The next hub will not be claimed."
               exit 1
             fi
