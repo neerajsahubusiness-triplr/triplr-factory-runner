@@ -1,30 +1,33 @@
-name: Factory Micro Hubs
+name: Factory Selected Hubs
 
 on:
   workflow_dispatch:
     inputs:
+      target_tier:
+        description: "Tier for these hubs"
+        required: true
+        type: choice
+        options:
+          - large
+          - small
+
+      factory_hub_ids:
+        description: "Factory hub IDs — one per line or comma-separated"
+        required: true
+        type: string
+
       pause_ms:
         description: "Pause between cluster batches"
         required: true
         default: "12000"
 
       max_steps_per_hub:
-        description: "Max step calls per hub"
+        description: "Maximum step calls per hub"
         required: true
-        default: "20"
-
-      max_hubs_per_worker:
-        description: "Max hubs each worker can process"
-        required: true
-        default: "5"
-
-      factory_hub_id:
-        description: "Optional fixed factory_hub.id. Leave blank for auto-claim."
-        required: false
-        default: ""
+        default: "25"
 
 jobs:
-  run-micro:
+  run-selected-hubs:
     runs-on: ubuntu-latest
 
     strategy:
@@ -33,69 +36,79 @@ jobs:
         worker: [1, 2, 3]
 
     steps:
-      - name: Run micro hubs with limit
+      - name: Run selected Factory hubs
         shell: bash
         run: |
           set -euo pipefail
 
+          TARGET_TIER="${{ github.event.inputs.target_tier }}"
           PAUSE_MS="${{ github.event.inputs.pause_ms }}"
           MAX_STEPS="${{ github.event.inputs.max_steps_per_hub }}"
-          MAX_HUBS="${{ github.event.inputs.max_hubs_per_worker }}"
-          FIXED_HUB_ID="${{ github.event.inputs.factory_hub_id }}"
           WORKER_NUMBER="${{ matrix.worker }}"
+          WORKER_COUNT=3
+
+          RAW_HUB_IDS='${{ github.event.inputs.factory_hub_ids }}'
 
           echo "======================================"
-          echo "Factory micro Hubs"
-          echo "Worker: $WORKER_NUMBER"
-          echo "Max hubs for worker: $MAX_HUBS"
+          echo "Factory Selected Hubs"
+          echo "Tier: $TARGET_TIER"
+          echo "Worker: $WORKER_NUMBER / $WORKER_COUNT"
           echo "Max steps per hub: $MAX_STEPS"
           echo "Pause: ${PAUSE_MS}ms"
-          echo "Fixed hub: ${FIXED_HUB_ID:-auto-claim}"
           echo "======================================"
 
-          # A fixed hub must only run on worker 1.
-          # This prevents three workers processing the same hub.
-          if [ -n "$FIXED_HUB_ID" ] && [ "$WORKER_NUMBER" != "1" ]; then
-            echo "Fixed hub supplied. Worker $WORKER_NUMBER exiting."
-            exit 0
+          # Accept comma-separated IDs or one ID per line.
+          mapfile -t ALL_HUB_IDS < <(
+            printf '%s\n' "$RAW_HUB_IDS" |
+            tr ',' '\n' |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' |
+            grep -E '^[0-9a-fA-F-]{36}$'
+          )
+
+          TOTAL_HUBS="${#ALL_HUB_IDS[@]}"
+
+          if [ "$TOTAL_HUBS" -eq 0 ]; then
+            echo "No valid Factory hub IDs supplied."
+            exit 1
           fi
 
-          for hub_num in $(seq 1 "$MAX_HUBS"); do
-            echo ""
-            echo "Worker $WORKER_NUMBER starting hub $hub_num of $MAX_HUBS"
+          echo "Total supplied hub IDs: $TOTAL_HUBS"
 
-            HUB_ID=""
+          ASSIGNED_COUNT=0
 
-            if [ -n "$FIXED_HUB_ID" ]; then
-              HUB_ID="$FIXED_HUB_ID"
+          for index in "${!ALL_HUB_IDS[@]}"; do
+            HUB_ID="${ALL_HUB_IDS[$index]}"
+
+            # Distribute hubs across the three workers.
+            ASSIGNED_WORKER=$(( (index % WORKER_COUNT) + 1 ))
+
+            if [ "$ASSIGNED_WORKER" -ne "$WORKER_NUMBER" ]; then
+              continue
             fi
 
+            ASSIGNED_COUNT=$((ASSIGNED_COUNT + 1))
             HUB_COMPLETED="false"
+
+            echo ""
+            echo "======================================"
+            echo "Worker $WORKER_NUMBER"
+            echo "Factory hub ID: $HUB_ID"
+            echo "Tier: $TARGET_TIER"
+            echo "======================================"
 
             for step_num in $(seq 1 "$MAX_STEPS"); do
               echo ""
-              echo "Worker $WORKER_NUMBER | Hub $hub_num | Step $step_num"
-              echo "Hub ID: ${HUB_ID:-auto-claim}"
+              echo "Worker $WORKER_NUMBER | Hub $HUB_ID | Step $step_num"
 
-              if [ -z "$HUB_ID" ]; then
-                PAYLOAD=$(jq -n \
-                  --arg target_tier "micro" \
-                  --argjson pause_ms "$PAUSE_MS" \
-                  '{
-                    target_tier: $target_tier,
-                    pause_ms: $pause_ms
-                  }')
-              else
-                PAYLOAD=$(jq -n \
-                  --arg factory_hub_id "$HUB_ID" \
-                  --arg target_tier "micro" \
-                  --argjson pause_ms "$PAUSE_MS" \
-                  '{
-                    factory_hub_id: $factory_hub_id,
-                    target_tier: $target_tier,
-                    pause_ms: $pause_ms
-                  }')
-              fi
+              PAYLOAD=$(jq -n \
+                --arg factory_hub_id "$HUB_ID" \
+                --arg target_tier "$TARGET_TIER" \
+                --argjson pause_ms "$PAUSE_MS" \
+                '{
+                  factory_hub_id: $factory_hub_id,
+                  target_tier: $target_tier,
+                  pause_ms: $pause_ms
+                }')
 
               RESPONSE=$(curl \
                 --silent \
@@ -111,20 +124,19 @@ jobs:
               echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
 
               if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
-                echo "Non-JSON response from Worker. Retrying after 30 seconds."
+                echo "Non-JSON response. Retrying after 30 seconds."
                 sleep 30
                 continue
               fi
 
-              RESPONSE_HUB_ID=$(echo "$RESPONSE" | jq -r '.factory_hub_id // empty')
+              RESPONSE_HUB_ID=$(echo "$RESPONSE" | jq -r \
+                '.factory_hub_id // .result.factory_hub_id // empty'
+              )
 
-              if [ -n "$RESPONSE_HUB_ID" ]; then
-                HUB_ID="$RESPONSE_HUB_ID"
-              fi
-
-              if echo "$RESPONSE" | jq -e '.no_pending_hubs == true' >/dev/null; then
-                echo "No pending micro hubs remain."
-                exit 0
+              if [ -n "$RESPONSE_HUB_ID" ] &&
+                 [ "$RESPONSE_HUB_ID" != "$HUB_ID" ]; then
+                echo "Safety failure: requested $HUB_ID but Worker returned $RESPONSE_HUB_ID"
+                exit 1
               fi
 
               if echo "$RESPONSE" | jq -e '.hub_done == true' >/dev/null; then
@@ -134,8 +146,11 @@ jobs:
               fi
 
               if echo "$RESPONSE" | jq -e '.ok != true' >/dev/null; then
-                ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r '.error // .result.error // .message // "Unknown Worker failure"')
-                echo "Worker failed: $ERROR_MESSAGE"
+                ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r \
+                  '.error // .result.error // .message // "Unknown Worker failure"'
+                )
+
+                echo "Worker failed for hub $HUB_ID: $ERROR_MESSAGE"
                 exit 1
               fi
 
@@ -144,16 +159,17 @@ jobs:
 
             if [ "$HUB_COMPLETED" != "true" ]; then
               echo "Hub did not complete within $MAX_STEPS steps."
-              echo "Factory hub ID: ${HUB_ID:-unknown}"
+              echo "Factory hub ID: $HUB_ID"
               exit 1
             fi
-
-            # A fixed hub should run once only.
-            if [ -n "$FIXED_HUB_ID" ]; then
-              echo "Fixed hub completed."
-              exit 0
-            fi
           done
+
+          if [ "$ASSIGNED_COUNT" -eq 0 ]; then
+            echo "No hubs assigned to Worker $WORKER_NUMBER."
+          else
+            echo ""
+            echo "Worker $WORKER_NUMBER completed $ASSIGNED_COUNT assigned hubs."
+          fi
 
         env:
           FACTORY_URL: ${{ secrets.FACTORY_URL }}
