@@ -17,9 +17,15 @@ jobs:
           import os
           import json
           import urllib.request
+          import urllib.error
 
           base_url = os.environ["FACTORY_BASE_URL"].strip()
           token = os.environ["FACTORY_TOKEN"].strip()
+
+          if not base_url.startswith(("http://", "https://")):
+              base_url = "https://" + base_url
+
+          base_url = base_url.rstrip("/")
 
           url = base_url + "/factory/enrich-hub-heroes-unsplash"
 
@@ -56,9 +62,14 @@ jobs:
                   body = response.read().decode("utf-8")
                   parsed = json.loads(body)
                   print(json.dumps(parsed, indent=2))
+
           except urllib.error.HTTPError as e:
-    body = e.read().decode("utf-8")
-    print("HTTP ERROR:", e.code)
-    print("RESPONSE BODY:")
-    print(body)
+              body = e.read().decode("utf-8")
+              print("HTTP ERROR:", e.code)
+              print("RESPONSE BODY:")
+              print(body)
+
+          except Exception as e:
+              print("REQUEST ERROR:")
+              print(repr(e))
           PY
