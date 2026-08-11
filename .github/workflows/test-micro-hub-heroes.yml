@@ -51,9 +51,10 @@ jobs:
               url,
               data=json.dumps(payload).encode("utf-8"),
               headers={
-                  "Content-Type": "application/json",
-                  "Authorization": f"Bearer {token}"
-              },
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {token}",
+    "User-Agent": "TRIPLR-Factory-Runner/1.0"
+},
               method="POST"
           )
 
