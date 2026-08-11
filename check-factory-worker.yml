@@ -1,0 +1,19 @@
+name: Check Factory Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show Factory Worker Host
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
+        run: |
+          python3 -c "import os; from urllib.parse import urlparse; print('Factory host:', urlparse(os.environ['FACTORY_BASE_URL']).netloc)"
+
+      - name: Check Factory Health
+        run: |
+          curl -sS "${{ secrets.FACTORY_BASE_URL }}/health" | jq
