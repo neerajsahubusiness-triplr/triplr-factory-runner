@@ -57,8 +57,8 @@ jobs:
                   parsed = json.loads(body)
                   print(json.dumps(parsed, indent=2))
           except urllib.error.HTTPError as e:
-              body = e.read().decode("utf-8")
-              print("HTTP ERROR:", e.code)
-              print(body)
-              raise
+    body = e.read().decode("utf-8")
+    print("HTTP ERROR:", e.code)
+    print("RESPONSE BODY:")
+    print(body)
           PY
