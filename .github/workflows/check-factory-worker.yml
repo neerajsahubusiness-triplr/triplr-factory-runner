@@ -10,10 +10,13 @@ jobs:
     steps:
       - name: Show Factory Worker Host
         env:
-          FACTORY_BASE_URL: ${{ secrets.FACTORY_URL }}
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
         run: |
+          echo "Factory URL configured"
           python3 -c "import os; from urllib.parse import urlparse; print('Factory host:', urlparse(os.environ['FACTORY_BASE_URL']).netloc)"
 
       - name: Check Factory Health
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
         run: |
-          curl -sS "${{ secrets.FACTORY_BASE_URL }}/health" | jq
+          curl -sS "$FACTORY_BASE_URL/health" | jq
