@@ -9,10 +9,13 @@ jobs:
 
     steps:
       - name: Test 10 Micro Hub Heroes
+        env:
+          FACTORY_BASE_URL: ${{ secrets.FACTORY_BASE_URL }}
+          FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
         run: |
-          curl -sS -X POST "${{ secrets.FACTORY_BASE_URL }}/factory/enrich-hub-heroes-unsplash" \
+          curl -sS -X POST "$FACTORY_BASE_URL/factory/enrich-hub-heroes-unsplash" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.FACTORY_TOKEN }}" \
+            -H "Authorization: Bearer $FACTORY_TOKEN" \
             -d '{
               "target_tier": "micro",
               "image_count": 2,
