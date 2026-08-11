@@ -1,0 +1,31 @@
+name: Test Micro Hub Heroes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-micro-hub-heroes:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call TRIPLR Factory Worker
+        run: |
+          curl -X POST "${{ secrets.TRIPLR_FACTORY_WORKER_URL }}/factory/enrich-hub-heroes-unsplash" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "target_tier": "micro",
+              "image_count": 2,
+              "dry_run": true,
+              "hub_ids": [
+                "fc067b61-14ec-4a65-9b74-f913cfa2601b",
+                "9af7d780-e642-4a51-94e4-e2f583c05f50",
+                "312409dd-46d5-4de2-af63-e66a98f1b4b5",
+                "bb1e1509-8329-4908-a49c-8827cc18c16e",
+                "bfc1f9e2-2715-47d6-a4f4-fb66a8fd1da6",
+                "48100ec5-7ad1-4277-86a0-45482e84189b",
+                "59c98f26-be4e-4401-8704-c2b522065ce7",
+                "3baad32c-cf6f-4b1e-8123-ea687b184efb",
+                "47368c3d-3a54-4902-9165-2c86407ab220",
+                "d4cd56a7-cc2d-4566-9bf2-1e15141ac6cf"
+              ]
+            }'
