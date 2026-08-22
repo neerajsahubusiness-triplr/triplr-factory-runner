@@ -3,8 +3,8 @@ name: Micro Hub Heroes
 on:
   workflow_dispatch:
     inputs:
-       batch_size:
-        description: "Number of Micro hubs to process"
+      batch_size:
+        description: "Number of Micro hubs to process (1-10)"
         required: true
         default: "5"
         type: string
@@ -43,37 +43,38 @@ jobs:
               ""
           ).strip()
 
-          batch_size = int(
-              os.environ.get(
-                  "BATCH_SIZE",
-                  "5"
+          try:
+              batch_size = int(
+                  os.environ.get(
+                      "BATCH_SIZE",
+                      "5"
+                  )
               )
-          )
+          except ValueError:
+              print("ERROR: batch_size must be a whole number.")
+              sys.exit(1)
 
           if not base_url:
-              print(
-                  "ERROR: FACTORY_BASE_URL secret is missing."
-              )
+              print("ERROR: FACTORY_BASE_URL secret is missing.")
               sys.exit(1)
 
           if not token:
-              print(
-                  "ERROR: FACTORY_TOKEN secret is missing."
-              )
+              print("ERROR: FACTORY_TOKEN secret is missing.")
               sys.exit(1)
 
           if batch_size < 1:
-    print(
-        "ERROR: batch_size must be at least 1."
-    )
-    sys.exit(1)
+              print("ERROR: batch_size must be at least 1.")
+              sys.exit(1)
 
-          if not base_url.startswith(
-              ("http://", "https://")
-          ):
-              base_url = (
-                  "https://" + base_url
+          if batch_size > 10:
+              print(
+                  "ERROR: This workflow currently contains 10 hub IDs, "
+                  "so batch_size cannot be greater than 10."
               )
+              sys.exit(1)
+
+          if not base_url.startswith(("http://", "https://")):
+              base_url = "https://" + base_url
 
           base_url = base_url.rstrip("/")
 
@@ -84,18 +85,6 @@ jobs:
 
           # ============================================================
           # MICRO HUBS
-          #
-          # Permanent Micro Hero workflow.
-          #
-          # First run:
-          #   batch_size = 5
-          #
-          # After verification:
-          #   batch_size = 10
-          #
-          # Real database writes.
-          # Existing complete heroes are protected because
-          # overwrite = false.
           # ============================================================
 
           hub_ids = [
@@ -111,29 +100,19 @@ jobs:
               "d4cd56a7-cc2d-4566-9bf2-1e15141ac6cf"
           ]
 
+          selected_hub_ids = hub_ids[:batch_size]
+
           # ============================================================
           # REQUEST
           # ============================================================
 
           payload = {
               "target_tier": "micro",
-
-              # Exactly two hub hero images:
-              # hero_1 = primary
-              # hero_2 = secondary
               "image_count": 2,
-
-              # Worker processes only this many IDs.
               "limit": batch_size,
-
-              # REAL RUN.
               "dry_run": False,
-
-              # Never replace an already-complete hub.
               "overwrite": False,
-
-              # Exact approved hub population.
-              "hub_ids": hub_ids
+              "hub_ids": selected_hub_ids
           }
 
           print()
@@ -141,48 +120,19 @@ jobs:
           print("TRIPLR MICRO HUB HERO ENRICHMENT")
           print("=" * 72)
 
-          print(
-              "Endpoint:",
-              endpoint
-          )
-
-          print(
-              "Tier:",
-              "micro"
-          )
-
-          print(
-              "Batch size:",
-              batch_size
-          )
-
-          print(
-              "Images per hub:",
-              2
-          )
-
-          print(
-              "Dry run:",
-              False
-          )
-
-          print(
-              "Overwrite:",
-              False
-          )
-
-          print(
-              "Available hub IDs:",
-              len(hub_ids)
-          )
+          print("Endpoint:", endpoint)
+          print("Tier:", "micro")
+          print("Batch size:", batch_size)
+          print("Images per hub:", 2)
+          print("Dry run:", False)
+          print("Overwrite:", False)
+          print("Available hub IDs:", len(hub_ids))
 
           print()
-          print(
-              "Hubs submitted in this request:"
-          )
+          print("Hubs submitted in this request:")
 
           for index, hub_id in enumerate(
-              hub_ids[:batch_size],
+              selected_hub_ids,
               start=1
           ):
               print(
@@ -194,24 +144,17 @@ jobs:
 
           request = urllib.request.Request(
               endpoint,
-
               data=json.dumps(
                   payload
-              ).encode(
-                  "utf-8"
-              ),
-
+              ).encode("utf-8"),
               headers={
                   "Content-Type":
                       "application/json",
-
                   "Authorization":
                       f"Bearer {token}",
-
                   "User-Agent":
                       "TRIPLR-Factory-Runner/1.0"
               },
-
               method="POST"
           )
 
@@ -225,16 +168,12 @@ jobs:
                   timeout=300
               ) as response:
 
-                  status_code = (
-                      response.getcode()
-                  )
+                  status_code = response.getcode()
 
                   raw_body = (
                       response
                       .read()
-                      .decode(
-                          "utf-8"
-                      )
+                      .decode("utf-8")
                   )
 
                   print()
@@ -247,24 +186,16 @@ jobs:
                       result = json.loads(
                           raw_body
                       )
-
                   except json.JSONDecodeError:
-
                       print()
                       print(
                           "ERROR: Worker returned non-JSON response."
                       )
-
-                      print(
-                          raw_body
-                      )
-
+                      print(raw_body)
                       sys.exit(1)
 
                   print()
-                  print(
-                      "WORKER RESPONSE:"
-                  )
+                  print("WORKER RESPONSE:")
 
                   print(
                       json.dumps(
@@ -275,49 +206,39 @@ jobs:
                   )
 
                   # ====================================================
-                  # RESPONSE VALIDATION
+                  # VALIDATION
                   # ====================================================
 
                   if (
                       status_code < 200 or
                       status_code >= 300
                   ):
-                      print()
                       print(
                           "ERROR: Worker returned unsuccessful HTTP status."
                       )
                       sys.exit(1)
 
-                  if result.get(
-                      "ok"
-                  ) is False:
-                      print()
+                  if result.get("ok") is False:
                       print(
                           "ERROR: Worker returned ok=false."
                       )
                       sys.exit(1)
 
-                  returned_tier = (
-                      result.get(
-                          "target_tier"
-                      )
+                  returned_tier = result.get(
+                      "target_tier"
                   )
 
                   if (
                       returned_tier and
                       returned_tier != "micro"
                   ):
-                      print()
                       print(
-                          "ERROR: Worker processed the wrong tier:",
+                          "ERROR: Worker processed wrong tier:",
                           returned_tier
                       )
                       sys.exit(1)
 
-                  if result.get(
-                      "dry_run"
-                  ) is True:
-                      print()
+                  if result.get("dry_run") is True:
                       print(
                           "ERROR: Worker unexpectedly ran in dry-run mode."
                       )
@@ -360,9 +281,7 @@ jobs:
 
                   print()
                   print("=" * 72)
-                  print(
-                      "MICRO HUB HERO BATCH SUMMARY"
-                  )
+                  print("MICRO HUB HERO BATCH SUMMARY")
                   print("=" * 72)
 
                   print(
@@ -392,7 +311,6 @@ jobs:
 
                   print("=" * 72)
 
-                  # A Worker-level failure should fail GitHub Actions.
                   if failed > 0:
                       print()
                       print(
@@ -422,9 +340,7 @@ jobs:
 
               print()
               print("=" * 72)
-              print(
-                  "HTTP ERROR"
-              )
+              print("HTTP ERROR")
               print("=" * 72)
 
               print(
@@ -432,13 +348,8 @@ jobs:
                   error.code
               )
 
-              print(
-                  "Response:"
-              )
-
-              print(
-                  body
-              )
+              print("Response:")
+              print(body)
 
               sys.exit(1)
 
@@ -450,9 +361,7 @@ jobs:
 
               print()
               print("=" * 72)
-              print(
-                  "CONNECTION ERROR"
-              )
+              print("CONNECTION ERROR")
               print("=" * 72)
 
               print(
@@ -469,9 +378,7 @@ jobs:
 
               print()
               print("=" * 72)
-              print(
-                  "REQUEST ERROR"
-              )
+              print("REQUEST ERROR")
               print("=" * 72)
 
               print(
