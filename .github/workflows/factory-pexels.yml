@@ -1,4 +1,4 @@
-name: Factory Pexels Enrichment Small
+name: Factory Pexels Enrichment Micro
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       hub_count:
-        description: "Small hubs per parallel worker"
+        description: "Micro hubs per parallel worker"
         required: true
         default: "3"
 
@@ -29,7 +29,7 @@ on:
       tiers:
         description: "Hub tiers, comma-separated"
         required: true
-        default: "small"
+        default: "micro"
 
       fixed_hub_id:
         description: "Optional fixed canonical hub ID — use only for single-worker testing"
@@ -37,7 +37,7 @@ on:
         default: ""
 
 concurrency:
-  group: factory-pexels-small-hourly
+  group: factory-pexels-micro-hourly
   cancel-in-progress: false
 
 jobs:
@@ -49,9 +49,9 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - worker_id: pexels-small-worker-1
+          - worker_id: pexels-micro-worker-1
             key_slot: 1
-          - worker_id: pexels-small-worker-2
+          - worker_id: pexels-micro-worker-2
             key_slot: 2
 
     env:
@@ -61,7 +61,7 @@ jobs:
       PEXELS_KEY_SLOT: ${{ matrix.key_slot }}
 
     steps:
-      - name: Complete Pexels Small hubs
+      - name: Complete Pexels Micro hubs
         shell: bash
         run: |
           set -euo pipefail
@@ -71,7 +71,7 @@ jobs:
             ACTIVITY_LIMIT="20"
             MAX_CALLS_PER_HUB="35"
             PAUSE_SECONDS="5"
-            TIERS="small"
+            TIERS="micro"
             FIXED_HUB_ID=""
           else
             HUB_COUNT="${{ inputs.hub_count }}"
@@ -122,7 +122,7 @@ jobs:
           fi
 
           echo "========================================"
-          echo "PEXELS SMALL PARALLEL WORKER CONFIGURATION"
+          echo "PEXELS MICRO PARALLEL WORKER CONFIGURATION"
           echo "Worker ID: $WORKER_ID"
           echo "Pexels key slot: $PEXELS_KEY_SLOT"
           echo "Hub count for this worker: $HUB_COUNT"
@@ -142,7 +142,7 @@ jobs:
             echo ""
             echo "========================================"
             echo "Worker: $WORKER_ID"
-            echo "Starting Small hub $HUB_NUMBER / $HUB_COUNT"
+            echo "Starting Micro hub $HUB_NUMBER / $HUB_COUNT"
             echo "Key slot: $PEXELS_KEY_SLOT"
             echo "========================================"
 
@@ -170,7 +170,7 @@ jobs:
                 }')
             fi
 
-            CLAIM_RESPONSE_FILE="pexels-small-claim-response-${PEXELS_KEY_SLOT}.json"
+            CLAIM_RESPONSE_FILE="pexels-micro-claim-response-${PEXELS_KEY_SLOT}.json"
 
             CLAIM_HTTP_CODE=$(curl -sS \
               -o "$CLAIM_RESPONSE_FILE" \
@@ -211,7 +211,7 @@ jobs:
               "$CLAIM_RESPONSE_FILE")
 
             if [ "$NO_PENDING" = "true" ]; then
-              echo "No pending Small Pexels hubs found."
+              echo "No pending Micro Pexels hubs found."
               exit 0
             fi
 
@@ -229,7 +229,7 @@ jobs:
             fi
 
             echo ""
-            echo "Locked Pexels Small hub:"
+            echo "Locked Pexels Micro hub:"
             echo "$HUB_NAME ($HUB_ID)"
             echo "Worker: $WORKER_ID"
             echo "Key slot: $PEXELS_KEY_SLOT"
@@ -262,7 +262,7 @@ jobs:
                   pexels_key_slot: $pexels_key_slot
                 }')
 
-              RESPONSE_FILE="pexels-small-response-${PEXELS_KEY_SLOT}.json"
+              RESPONSE_FILE="pexels-micro-response-${PEXELS_KEY_SLOT}.json"
 
               HTTP_CODE=$(curl -sS \
                 -o "$RESPONSE_FILE" \
@@ -347,7 +347,7 @@ jobs:
 
               if [ "$HUB_COMPLETE" = "true" ]; then
                 echo ""
-                echo "Pexels Small hub complete: $COMPLETED / $TOTAL"
+                echo "Pexels Micro hub complete: $COMPLETED / $TOTAL"
                 break
               fi
 
@@ -356,7 +356,7 @@ jobs:
 
             if [ "$HUB_COMPLETE" != "true" ]; then
               echo ""
-              echo "Pexels Small hub did not complete within $MAX_CALLS_PER_HUB calls."
+              echo "Pexels Micro hub did not complete within $MAX_CALLS_PER_HUB calls."
               echo "Worker: $WORKER_ID"
               echo "Key slot: $PEXELS_KEY_SLOT"
               echo "Completed: $COMPLETED / $TOTAL"
@@ -368,7 +368,7 @@ jobs:
 
             echo ""
             echo "========================================"
-            echo "PEXELS SMALL HUB COMPLETE"
+            echo "PEXELS MICRO HUB COMPLETE"
             echo "Worker: $WORKER_ID"
             echo "Key slot: $PEXELS_KEY_SLOT"
             echo "$HUB_NAME"
