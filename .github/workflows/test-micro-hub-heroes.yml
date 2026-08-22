@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Number of Micro hubs to process (1-10)"
+        description: "Number of Micro hubs to process"
         required: true
         default: "5"
         type: string
@@ -12,7 +12,7 @@ on:
 jobs:
   micro-hub-heroes:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Enrich Micro Hub Heroes
@@ -28,10 +28,6 @@ jobs:
           import json
           import urllib.request
           import urllib.error
-
-          # ============================================================
-          # CONFIG
-          # ============================================================
 
           base_url = os.environ.get(
               "FACTORY_BASE_URL",
@@ -66,13 +62,6 @@ jobs:
               print("ERROR: batch_size must be at least 1.")
               sys.exit(1)
 
-          if batch_size > 10:
-              print(
-                  "ERROR: This workflow currently contains 10 hub IDs, "
-                  "so batch_size cannot be greater than 10."
-              )
-              sys.exit(1)
-
           if not base_url.startswith(("http://", "https://")):
               base_url = "https://" + base_url
 
@@ -83,120 +72,57 @@ jobs:
               "/factory/enrich-hub-heroes-unsplash"
           )
 
-          # ============================================================
-          # MICRO HUBS
-          # ============================================================
-
-          hub_ids = [
-              "fc067b61-14ec-4a65-9b74-f913cfa2601b",
-              "9af7d780-e642-4a51-94e4-e2f583c05f50",
-              "312409dd-46d5-4de2-af63-e66a98f1b4b5",
-              "bb1e1509-8329-4908-a49c-8827cc18c16e",
-              "bfc1f9e2-2715-47d6-a4f4-fb66a8fd1da6",
-              "48100ec5-7ad1-4277-86a0-45482e84189b",
-              "59c98f26-be4e-4401-8704-c2b522065ce7",
-              "3baad32c-cf6f-4b1e-8123-ea687b184efb",
-              "47368c3d-3a54-4902-9165-2c86407ab220",
-              "d4cd56a7-cc2d-4566-9bf2-1e15141ac6cf"
-          ]
-
-          selected_hub_ids = hub_ids[:batch_size]
-
-          # ============================================================
-          # REQUEST
-          # ============================================================
-
           payload = {
               "target_tier": "micro",
               "image_count": 2,
               "limit": batch_size,
               "dry_run": False,
-              "overwrite": False,
-              "hub_ids": selected_hub_ids
+              "overwrite": False
           }
 
           print()
           print("=" * 72)
           print("TRIPLR MICRO HUB HERO ENRICHMENT")
           print("=" * 72)
-
-          print("Endpoint:", endpoint)
-          print("Tier:", "micro")
+          print("Tier: micro")
           print("Batch size:", batch_size)
-          print("Images per hub:", 2)
-          print("Dry run:", False)
-          print("Overwrite:", False)
-          print("Available hub IDs:", len(hub_ids))
-
-          print()
-          print("Hubs submitted in this request:")
-
-          for index, hub_id in enumerate(
-              selected_hub_ids,
-              start=1
-          ):
-              print(
-                  f"  {index:02d}. {hub_id}"
-              )
-
-          print()
+          print("Images per hub: 2")
+          print("Dry run: False")
+          print("Overwrite: False")
           print("=" * 72)
 
           request = urllib.request.Request(
               endpoint,
-              data=json.dumps(
-                  payload
-              ).encode("utf-8"),
+              data=json.dumps(payload).encode("utf-8"),
               headers={
-                  "Content-Type":
-                      "application/json",
-                  "Authorization":
-                      f"Bearer {token}",
-                  "User-Agent":
-                      "TRIPLR-Factory-Runner/1.0"
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {token}",
+                  "User-Agent": "TRIPLR-Factory-Runner/1.0"
               },
               method="POST"
           )
 
-          # ============================================================
-          # CALL FACTORY WORKER
-          # ============================================================
-
           try:
               with urllib.request.urlopen(
                   request,
-                  timeout=300
+                  timeout=900
               ) as response:
 
                   status_code = response.getcode()
-
-                  raw_body = (
-                      response
-                      .read()
-                      .decode("utf-8")
-                  )
+                  raw_body = response.read().decode("utf-8")
 
                   print()
-                  print(
-                      "HTTP STATUS:",
-                      status_code
-                  )
+                  print("HTTP STATUS:", status_code)
 
                   try:
-                      result = json.loads(
-                          raw_body
-                      )
+                      result = json.loads(raw_body)
                   except json.JSONDecodeError:
-                      print()
-                      print(
-                          "ERROR: Worker returned non-JSON response."
-                      )
+                      print("ERROR: Worker returned non-JSON response.")
                       print(raw_body)
                       sys.exit(1)
 
                   print()
                   print("WORKER RESPONSE:")
-
                   print(
                       json.dumps(
                           result,
@@ -205,186 +131,69 @@ jobs:
                       )
                   )
 
-                  # ====================================================
-                  # VALIDATION
-                  # ====================================================
-
-                  if (
-                      status_code < 200 or
-                      status_code >= 300
-                  ):
-                      print(
-                          "ERROR: Worker returned unsuccessful HTTP status."
-                      )
-                      sys.exit(1)
-
                   if result.get("ok") is False:
-                      print(
-                          "ERROR: Worker returned ok=false."
-                      )
-                      sys.exit(1)
-
-                  returned_tier = result.get(
-                      "target_tier"
-                  )
-
-                  if (
-                      returned_tier and
-                      returned_tier != "micro"
-                  ):
-                      print(
-                          "ERROR: Worker processed wrong tier:",
-                          returned_tier
-                      )
-                      sys.exit(1)
-
-                  if result.get("dry_run") is True:
-                      print(
-                          "ERROR: Worker unexpectedly ran in dry-run mode."
-                      )
+                      print("ERROR: Worker returned ok=false.")
                       sys.exit(1)
 
                   completed = int(
-                      result.get(
-                          "completed",
-                          0
-                      ) or 0
+                      result.get("completed", 0) or 0
                   )
 
                   skipped = int(
-                      result.get(
-                          "skipped",
-                          0
-                      ) or 0
+                      result.get("skipped", 0) or 0
                   )
 
                   review = int(
-                      result.get(
-                          "review",
-                          0
-                      ) or 0
+                      result.get("review", 0) or 0
                   )
 
                   failed = int(
-                      result.get(
-                          "failed",
-                          0
-                      ) or 0
+                      result.get("failed", 0) or 0
                   )
 
                   hubs_requested = int(
-                      result.get(
-                          "hubs_requested",
-                          0
-                      ) or 0
+                      result.get("hubs_requested", 0) or 0
                   )
 
                   print()
                   print("=" * 72)
                   print("MICRO HUB HERO BATCH SUMMARY")
                   print("=" * 72)
-
-                  print(
-                      "Hubs requested:",
-                      hubs_requested
-                  )
-
-                  print(
-                      "Completed:",
-                      completed
-                  )
-
-                  print(
-                      "Skipped:",
-                      skipped
-                  )
-
-                  print(
-                      "Review:",
-                      review
-                  )
-
-                  print(
-                      "Failed:",
-                      failed
-                  )
-
+                  print("Hubs requested:", hubs_requested)
+                  print("Completed:", completed)
+                  print("Skipped:", skipped)
+                  print("Review:", review)
+                  print("Failed:", failed)
                   print("=" * 72)
 
                   if failed > 0:
-                      print()
-                      print(
-                          "ERROR: One or more Micro hubs failed."
-                      )
+                      print("ERROR: One or more Micro hubs failed.")
                       sys.exit(1)
 
                   print()
-                  print(
-                      "Micro Hub Hero batch completed successfully."
-                  )
-
-          # ============================================================
-          # HTTP ERROR
-          # ============================================================
+                  print("Micro Hub Hero batch completed successfully.")
 
           except urllib.error.HTTPError as error:
-
-              body = (
-                  error
-                  .read()
-                  .decode(
-                      "utf-8",
-                      errors="replace"
-                  )
+              body = error.read().decode(
+                  "utf-8",
+                  errors="replace"
               )
 
               print()
-              print("=" * 72)
-              print("HTTP ERROR")
-              print("=" * 72)
-
-              print(
-                  "Status:",
-                  error.code
-              )
-
-              print("Response:")
+              print("HTTP ERROR:", error.code)
               print(body)
-
               sys.exit(1)
-
-          # ============================================================
-          # CONNECTION ERROR
-          # ============================================================
 
           except urllib.error.URLError as error:
-
               print()
-              print("=" * 72)
-              print("CONNECTION ERROR")
-              print("=" * 72)
-
-              print(
-                  repr(error)
-              )
-
+              print("CONNECTION ERROR:")
+              print(repr(error))
               sys.exit(1)
 
-          # ============================================================
-          # OTHER ERROR
-          # ============================================================
-
           except Exception as error:
-
               print()
-              print("=" * 72)
-              print("REQUEST ERROR")
-              print("=" * 72)
-
-              print(
-                  repr(error)
-              )
-
+              print("REQUEST ERROR:")
+              print(repr(error))
               sys.exit(1)
 
           PY
