@@ -3,14 +3,11 @@ name: Micro Hub Heroes
 on:
   workflow_dispatch:
     inputs:
-      batch_size:
+       batch_size:
         description: "Number of Micro hubs to process"
         required: true
         default: "5"
-        type: choice
-        options:
-          - "5"
-          - "10"
+        type: string
 
 jobs:
   micro-hub-heroes:
@@ -65,11 +62,11 @@ jobs:
               )
               sys.exit(1)
 
-          if batch_size not in (5, 10):
-              print(
-                  "ERROR: batch_size must be 5 or 10."
-              )
-              sys.exit(1)
+          if batch_size < 1:
+    print(
+        "ERROR: batch_size must be at least 1."
+    )
+    sys.exit(1)
 
           if not base_url.startswith(
               ("http://", "https://")
