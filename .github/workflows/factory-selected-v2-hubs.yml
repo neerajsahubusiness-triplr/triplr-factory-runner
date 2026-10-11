@@ -1,0 +1,178 @@
+name: Factory Selected V2 Hubs
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tier:
+        description: "Tier for these V2 hubs"
+        required: true
+        type: choice
+        options:
+          - micro
+          - small
+          - medium
+          - large
+
+      factory_hub_ids:
+        description: "Factory hub IDs — one per line or comma-separated"
+        required: true
+        type: string
+
+      pause_ms:
+        description: "Pause between cluster batches"
+        required: true
+        default: "12000"
+
+      max_steps_per_hub:
+        description: "Maximum step calls per hub"
+        required: true
+        default: "25"
+
+jobs:
+  run-selected-v2-hubs:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3]
+
+    steps:
+      - name: Run selected V2 Factory hubs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_TIER="${{ github.event.inputs.target_tier }}"
+          PAUSE_MS="${{ github.event.inputs.pause_ms }}"
+          MAX_STEPS="${{ github.event.inputs.max_steps_per_hub }}"
+          WORKER_NUMBER="${{ matrix.worker }}"
+          WORKER_COUNT=3
+
+          RAW_HUB_IDS='${{ github.event.inputs.factory_hub_ids }}'
+
+          echo "======================================"
+          echo "Factory Selected V2 Hubs"
+          echo "Tier: $TARGET_TIER"
+          echo "Worker: $WORKER_NUMBER / $WORKER_COUNT"
+          echo "Max steps per hub: $MAX_STEPS"
+          echo "Pause: ${PAUSE_MS}ms"
+          echo "======================================"
+
+          # Accept comma-separated IDs or one ID per line.
+          mapfile -t ALL_HUB_IDS < <(
+            printf '%s\n' "$RAW_HUB_IDS" |
+            tr ',' '\n' |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' |
+            grep -E '^[0-9a-fA-F-]{36}$'
+          )
+
+          TOTAL_HUBS="${#ALL_HUB_IDS[@]}"
+
+          if [ "$TOTAL_HUBS" -eq 0 ]; then
+            echo "No valid Factory hub IDs supplied."
+            exit 1
+          fi
+
+          echo "Total supplied V2 hub IDs: $TOTAL_HUBS"
+
+          ASSIGNED_COUNT=0
+
+          for index in "${!ALL_HUB_IDS[@]}"; do
+            HUB_ID="${ALL_HUB_IDS[$index]}"
+
+            # Distribute hubs across the three workers.
+            ASSIGNED_WORKER=$(( (index % WORKER_COUNT) + 1 ))
+
+            if [ "$ASSIGNED_WORKER" -ne "$WORKER_NUMBER" ]; then
+              continue
+            fi
+
+            ASSIGNED_COUNT=$((ASSIGNED_COUNT + 1))
+            HUB_COMPLETED="false"
+
+            echo ""
+            echo "======================================"
+            echo "Worker $WORKER_NUMBER"
+            echo "V2 Factory hub ID: $HUB_ID"
+            echo "Tier: $TARGET_TIER"
+            echo "======================================"
+
+            for step_num in $(seq 1 "$MAX_STEPS"); do
+              echo ""
+              echo "Worker $WORKER_NUMBER | Hub $HUB_ID | Step $step_num"
+
+              PAYLOAD=$(jq -n \
+                --arg factory_hub_id "$HUB_ID" \
+                --arg target_tier "$TARGET_TIER" \
+                --argjson pause_ms "$PAUSE_MS" \
+                '{
+                  factory_hub_id: $factory_hub_id,
+                  target_tier: $target_tier,
+                  pause_ms: $pause_ms
+                }')
+
+              RESPONSE=$(curl \
+                --silent \
+                --show-error \
+                --max-time 240 \
+                -X POST \
+                "$FACTORY_URL/factory/run-next-hub-step" \
+                -H "content-type: application/json" \
+                -H "x-factory-token: $FACTORY_TOKEN" \
+                -d "$PAYLOAD" \
+                || true)
+
+              echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
+
+              if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
+                echo "Non-JSON response. Retrying after 30 seconds."
+                sleep 30
+                continue
+              fi
+
+              RESPONSE_HUB_ID=$(echo "$RESPONSE" | jq -r \
+                '.factory_hub_id // .result.factory_hub_id // empty'
+              )
+
+              if [ -n "$RESPONSE_HUB_ID" ] &&
+                 [ "$RESPONSE_HUB_ID" != "$HUB_ID" ]; then
+                echo "Safety failure: requested $HUB_ID but Worker returned $RESPONSE_HUB_ID"
+                exit 1
+              fi
+
+              if echo "$RESPONSE" | jq -e '.hub_done == true' >/dev/null; then
+                echo "V2 hub completed: $HUB_ID"
+                HUB_COMPLETED="true"
+                break
+              fi
+
+              if echo "$RESPONSE" | jq -e '.ok != true' >/dev/null; then
+                ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r \
+                  '.error // .result.error // .message // "Unknown Worker failure"'
+                )
+
+                echo "Worker failed for V2 hub $HUB_ID: $ERROR_MESSAGE"
+                exit 1
+              fi
+
+              sleep $((PAUSE_MS / 1000))
+            done
+
+            if [ "$HUB_COMPLETED" != "true" ]; then
+              echo "V2 hub did not complete within $MAX_STEPS steps."
+              echo "Factory hub ID: $HUB_ID"
+              exit 1
+            fi
+          done
+
+          if [ "$ASSIGNED_COUNT" -eq 0 ]; then
+            echo "No hubs assigned to Worker $WORKER_NUMBER."
+          else
+            echo ""
+            echo "Worker $WORKER_NUMBER completed $ASSIGNED_COUNT assigned V2 hubs."
+          fi
+
+        env:
+          FACTORY_URL: ${{ secrets.FACTORY_URL }}
+          FACTORY_TOKEN: ${{ secrets.FACTORY_TOKEN }}
