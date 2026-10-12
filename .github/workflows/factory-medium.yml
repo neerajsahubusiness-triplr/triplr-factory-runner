@@ -8,8 +8,10 @@ on:
         required: true
         type: choice
         options:
-          - large
-          - small
+          - micro
+  - small
+  - medium
+  - large
 
       factory_hub_ids:
         description: "Factory hub IDs — one per line or comma-separated"
