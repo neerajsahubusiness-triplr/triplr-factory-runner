@@ -61,18 +61,31 @@ jobs:
           echo "Pause: ${PAUSE_MS}ms"
           echo "======================================"
 
-          # Validate number.
+          # Validate number of hubs.
           if ! [[ "$NUMBER_OF_HUBS" =~ ^[1-9][0-9]*$ ]]; then
             echo "number_of_hubs must be a positive integer."
             exit 1
           fi
 
-          # Work out exactly how many hubs THIS worker should process.
+          # Validate pause.
+          if ! [[ "$PAUSE_MS" =~ ^[0-9]+$ ]]; then
+            echo "pause_ms must be a non-negative integer."
+            exit 1
+          fi
+
+          # Validate max steps.
+          if ! [[ "$MAX_STEPS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "max_steps_per_hub must be a positive integer."
+            exit 1
+          fi
+
+          # ------------------------------------------------------------
+          # DISTRIBUTE REQUESTED HUBS ACROSS 3 WORKERS
           #
-          # Examples:
-          # 5 hubs  -> workers = 2 / 2 / 1
-          # 10 hubs -> workers = 4 / 3 / 3
-          #
+          # 5 hubs  -> 2 / 2 / 1
+          # 10 hubs -> 4 / 3 / 3
+          # ------------------------------------------------------------
+
           BASE=$((NUMBER_OF_HUBS / WORKER_COUNT))
           REMAINDER=$((NUMBER_OF_HUBS % WORKER_COUNT))
 
@@ -82,12 +95,19 @@ jobs:
             HUBS_FOR_WORKER=$((HUBS_FOR_WORKER + 1))
           fi
 
-          echo "Worker $WORKER_NUMBER assigned $HUBS_FOR_WORKER hubs."
+          echo "Worker $WORKER_NUMBER assigned $HUBS_FOR_WORKER hub(s)."
 
           if [ "$HUBS_FOR_WORKER" -eq 0 ]; then
             echo "Nothing assigned to Worker $WORKER_NUMBER."
             exit 0
           fi
+
+          COMPLETED_COUNT=0
+          PARKED_COUNT=0
+
+          # ------------------------------------------------------------
+          # PROCESS EACH HUB ASSIGNED TO THIS WORKER
+          # ------------------------------------------------------------
 
           for hub_num in $(seq 1 "$HUBS_FOR_WORKER"); do
 
@@ -99,15 +119,20 @@ jobs:
             echo "======================================"
 
             HUB_ID=""
-            HUB_COMPLETED="false"
+            HUB_STATE="running"
+            NON_JSON_RETRIES=0
 
             for step_num in $(seq 1 "$MAX_STEPS"); do
 
               echo ""
               echo "Worker $WORKER_NUMBER | Hub slot $hub_num | Step $step_num"
 
-              # First call has no hub ID.
-              # Worker claims an eligible hub from the requested tier.
+              # --------------------------------------------------------
+              # FIRST CALL:
+              # No hub ID supplied. Factory claims an eligible hub
+              # from the requested tier.
+              # --------------------------------------------------------
+
               if [ -z "$HUB_ID" ]; then
 
                 PAYLOAD=$(jq -n \
@@ -120,8 +145,11 @@ jobs:
 
               else
 
-                # Once a hub has been claimed, every subsequent call
-                # is pinned to that exact Factory hub.
+                # ------------------------------------------------------
+                # AFTER CLAIM:
+                # Pin every subsequent call to the exact same hub.
+                # ------------------------------------------------------
+
                 PAYLOAD=$(jq -n \
                   --arg factory_hub_id "$HUB_ID" \
                   --arg target_tier "$TARGET_TIER" \
@@ -147,23 +175,59 @@ jobs:
 
               echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
 
+              # --------------------------------------------------------
+              # CLOUDFLARE / TRANSIENT NON-JSON RESPONSE
+              #
+              # Retry up to 3 times before parking the hub slot.
+              # --------------------------------------------------------
+
               if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
-                echo "Non-JSON response. Retrying after 30 seconds."
+
+                NON_JSON_RETRIES=$((NON_JSON_RETRIES + 1))
+
+                echo ""
+                echo "Non-JSON response."
+                echo "Transient retry: $NON_JSON_RETRIES / 3"
+
+                if [ "$NON_JSON_RETRIES" -ge 3 ]; then
+                  echo ""
+                  echo "======================================"
+                  echo "PARKING HUB SLOT"
+                  echo "Reason: 3 consecutive non-JSON responses"
+                  echo "Factory hub ID: ${HUB_ID:-not-yet-claimed}"
+                  echo "======================================"
+
+                  HUB_STATE="parked"
+                  break
+                fi
+
                 sleep 30
                 continue
               fi
+
+              # Successful JSON response resets transient counter.
+              NON_JSON_RETRIES=0
 
               RESPONSE_HUB_ID=$(echo "$RESPONSE" | jq -r \
                 '.factory_hub_id // .result.factory_hub_id // empty'
               )
 
-              # Capture the hub claimed by the Factory.
+              # --------------------------------------------------------
+              # CAPTURE AUTO-CLAIMED HUB ID
+              # --------------------------------------------------------
+
               if [ -z "$HUB_ID" ]; then
 
                 if [ -z "$RESPONSE_HUB_ID" ]; then
-                  echo "Factory did not return a factory_hub_id."
-                  echo "Cannot safely continue."
-                  exit 1
+                  echo ""
+                  echo "======================================"
+                  echo "PARKING HUB SLOT"
+                  echo "Factory returned no factory_hub_id."
+                  echo "Cannot safely continue this slot."
+                  echo "======================================"
+
+                  HUB_STATE="parked"
+                  break
                 fi
 
                 HUB_ID="$RESPONSE_HUB_ID"
@@ -173,26 +237,53 @@ jobs:
 
               else
 
-                # Safety: once claimed, Worker must never switch hubs.
+                # ------------------------------------------------------
+                # SAFETY:
+                # Once a hub is claimed, Factory cannot switch hubs.
+                # This remains a hard safety failure.
+                # ------------------------------------------------------
+
                 if [ -n "$RESPONSE_HUB_ID" ] &&
                    [ "$RESPONSE_HUB_ID" != "$HUB_ID" ]; then
 
+                  echo ""
+                  echo "======================================"
                   echo "SAFETY FAILURE"
                   echo "Expected hub: $HUB_ID"
-                  echo "Worker returned: $RESPONSE_HUB_ID"
+                  echo "Worker returned hub: $RESPONSE_HUB_ID"
+                  echo "======================================"
+
                   exit 1
                 fi
 
               fi
 
+              # --------------------------------------------------------
+              # HUB COMPLETE
+              # --------------------------------------------------------
+
               if echo "$RESPONSE" | jq -e '.hub_done == true' >/dev/null; then
 
                 echo ""
-                echo "Hub completed: $HUB_ID"
+                echo "======================================"
+                echo "HUB COMPLETED"
+                echo "Factory hub ID: $HUB_ID"
+                echo "======================================"
 
-                HUB_COMPLETED="true"
+                HUB_STATE="completed"
                 break
               fi
+
+              # --------------------------------------------------------
+              # FACTORY / OPENAI FAILURE
+              #
+              # Example:
+              # - cluster exhausted below minimum 6
+              # - OpenAI returned no activities
+              # - validation failure
+              #
+              # PARK THIS HUB AND CONTINUE TO NEXT HUB.
+              # --------------------------------------------------------
 
               if echo "$RESPONSE" | jq -e '.ok != true' >/dev/null; then
 
@@ -201,33 +292,75 @@ jobs:
                 )
 
                 echo ""
-                echo "Worker failed for hub $HUB_ID"
-                echo "$ERROR_MESSAGE"
+                echo "======================================"
+                echo "PARKING HUB"
+                echo "Factory hub ID: $HUB_ID"
+                echo "Reason: $ERROR_MESSAGE"
+                echo "======================================"
 
-                exit 1
+                HUB_STATE="parked"
+                break
               fi
 
               sleep $((PAUSE_MS / 1000))
 
             done
 
-            if [ "$HUB_COMPLETED" != "true" ]; then
-              echo ""
-              echo "Hub did not complete within $MAX_STEPS steps."
-              echo "Factory hub ID: $HUB_ID"
-              exit 1
-            fi
+            # ----------------------------------------------------------
+            # FINAL STATE FOR THIS HUB
+            # ----------------------------------------------------------
 
-            echo ""
-            echo "Worker $WORKER_NUMBER finished hub $hub_num of $HUBS_FOR_WORKER."
+            if [ "$HUB_STATE" = "completed" ]; then
+
+              COMPLETED_COUNT=$((COMPLETED_COUNT + 1))
+
+              echo ""
+              echo "Worker $WORKER_NUMBER completed hub $hub_num of $HUBS_FOR_WORKER."
+              echo "Factory hub ID: $HUB_ID"
+
+            elif [ "$HUB_STATE" = "parked" ]; then
+
+              PARKED_COUNT=$((PARKED_COUNT + 1))
+
+              echo ""
+              echo "Worker $WORKER_NUMBER parked hub $hub_num of $HUBS_FOR_WORKER."
+              echo "Factory hub ID: ${HUB_ID:-not-claimed}"
+              echo "Continuing to next hub."
+
+            else
+
+              # Max steps reached without hub_done or explicit failure.
+              PARKED_COUNT=$((PARKED_COUNT + 1))
+
+              echo ""
+              echo "======================================"
+              echo "PARKING HUB"
+              echo "Reason: Maximum $MAX_STEPS steps reached"
+              echo "Factory hub ID: ${HUB_ID:-not-claimed}"
+              echo "======================================"
+              echo "Continuing to next hub."
+
+            fi
 
           done
 
+          # ------------------------------------------------------------
+          # WORKER SUMMARY
+          # ------------------------------------------------------------
+
           echo ""
           echo "======================================"
-          echo "Worker $WORKER_NUMBER finished."
-          echo "Completed hubs: $HUBS_FOR_WORKER"
+          echo "WORKER $WORKER_NUMBER FINISHED"
+          echo "Assigned:  $HUBS_FOR_WORKER"
+          echo "Completed: $COMPLETED_COUNT"
+          echo "Parked:    $PARKED_COUNT"
           echo "======================================"
+
+          # IMPORTANT:
+          # Parked catalogue hubs do NOT fail the GitHub job.
+          # They can be repaired/re-run after bulk generation.
+
+          exit 0
 
         env:
           FACTORY_URL: ${{ secrets.FACTORY_URL }}
