@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target_tier:
-        description: "Tier for these hubs"
+        description: "Tier to run"
         required: true
         type: choice
         options:
@@ -13,13 +13,8 @@ on:
           - medium
           - large
 
-      factory_hub_ids:
-        description: "Factory hub IDs — one per line or comma-separated"
-        required: true
-        type: string
-
       number_of_hubs:
-        description: "Number of hubs to run from the supplied list"
+        description: "Number of hubs to run"
         required: true
         default: "5"
         type: string
@@ -44,7 +39,7 @@ jobs:
         worker: [1, 2, 3]
 
     steps:
-      - name: Run selected Factory hubs
+      - name: Run Factory hubs
         shell: bash
         run: |
           set -euo pipefail
@@ -53,89 +48,91 @@ jobs:
           NUMBER_OF_HUBS="${{ github.event.inputs.number_of_hubs }}"
           PAUSE_MS="${{ github.event.inputs.pause_ms }}"
           MAX_STEPS="${{ github.event.inputs.max_steps_per_hub }}"
+
           WORKER_NUMBER="${{ matrix.worker }}"
           WORKER_COUNT=3
-
-          RAW_HUB_IDS='${{ github.event.inputs.factory_hub_ids }}'
 
           echo "======================================"
           echo "Factory Selected Hubs"
           echo "Tier: $TARGET_TIER"
-          echo "Requested hubs: $NUMBER_OF_HUBS"
+          echo "Total requested hubs: $NUMBER_OF_HUBS"
           echo "Worker: $WORKER_NUMBER / $WORKER_COUNT"
           echo "Max steps per hub: $MAX_STEPS"
           echo "Pause: ${PAUSE_MS}ms"
           echo "======================================"
 
-          # Validate number_of_hubs.
+          # Validate number.
           if ! [[ "$NUMBER_OF_HUBS" =~ ^[1-9][0-9]*$ ]]; then
             echo "number_of_hubs must be a positive integer."
             exit 1
           fi
 
-          # Accept comma-separated IDs or one ID per line.
-          mapfile -t SUPPLIED_HUB_IDS < <(
-            printf '%s\n' "$RAW_HUB_IDS" |
-            tr ',' '\n' |
-            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' |
-            grep -E '^[0-9a-fA-F-]{36}$'
-          )
+          # Work out exactly how many hubs THIS worker should process.
+          #
+          # Examples:
+          # 5 hubs  -> workers = 2 / 2 / 1
+          # 10 hubs -> workers = 4 / 3 / 3
+          #
+          BASE=$((NUMBER_OF_HUBS / WORKER_COUNT))
+          REMAINDER=$((NUMBER_OF_HUBS % WORKER_COUNT))
 
-          SUPPLIED_TOTAL="${#SUPPLIED_HUB_IDS[@]}"
+          HUBS_FOR_WORKER="$BASE"
 
-          if [ "$SUPPLIED_TOTAL" -eq 0 ]; then
-            echo "No valid Factory hub IDs supplied."
-            exit 1
+          if [ "$WORKER_NUMBER" -le "$REMAINDER" ]; then
+            HUBS_FOR_WORKER=$((HUBS_FOR_WORKER + 1))
           fi
 
-          if [ "$NUMBER_OF_HUBS" -gt "$SUPPLIED_TOTAL" ]; then
-            echo "Requested $NUMBER_OF_HUBS hubs but only $SUPPLIED_TOTAL valid IDs were supplied."
-            exit 1
+          echo "Worker $WORKER_NUMBER assigned $HUBS_FOR_WORKER hubs."
+
+          if [ "$HUBS_FOR_WORKER" -eq 0 ]; then
+            echo "Nothing assigned to Worker $WORKER_NUMBER."
+            exit 0
           fi
 
-          # Take only the requested number BEFORE distributing to workers.
-          ALL_HUB_IDS=("${SUPPLIED_HUB_IDS[@]:0:$NUMBER_OF_HUBS}")
-
-          TOTAL_HUBS="${#ALL_HUB_IDS[@]}"
-
-          echo "Valid supplied hub IDs: $SUPPLIED_TOTAL"
-          echo "Hubs selected for this run: $TOTAL_HUBS"
-
-          ASSIGNED_COUNT=0
-
-          for index in "${!ALL_HUB_IDS[@]}"; do
-            HUB_ID="${ALL_HUB_IDS[$index]}"
-
-            # Distribute selected hubs across the three workers.
-            ASSIGNED_WORKER=$(( (index % WORKER_COUNT) + 1 ))
-
-            if [ "$ASSIGNED_WORKER" -ne "$WORKER_NUMBER" ]; then
-              continue
-            fi
-
-            ASSIGNED_COUNT=$((ASSIGNED_COUNT + 1))
-            HUB_COMPLETED="false"
+          for hub_num in $(seq 1 "$HUBS_FOR_WORKER"); do
 
             echo ""
             echo "======================================"
             echo "Worker $WORKER_NUMBER"
-            echo "Factory hub ID: $HUB_ID"
+            echo "Claiming hub $hub_num of $HUBS_FOR_WORKER"
             echo "Tier: $TARGET_TIER"
             echo "======================================"
 
-            for step_num in $(seq 1 "$MAX_STEPS"); do
-              echo ""
-              echo "Worker $WORKER_NUMBER | Hub $HUB_ID | Step $step_num"
+            HUB_ID=""
+            HUB_COMPLETED="false"
 
-              PAYLOAD=$(jq -n \
-                --arg factory_hub_id "$HUB_ID" \
-                --arg target_tier "$TARGET_TIER" \
-                --argjson pause_ms "$PAUSE_MS" \
-                '{
-                  factory_hub_id: $factory_hub_id,
-                  target_tier: $target_tier,
-                  pause_ms: $pause_ms
-                }')
+            for step_num in $(seq 1 "$MAX_STEPS"); do
+
+              echo ""
+              echo "Worker $WORKER_NUMBER | Hub slot $hub_num | Step $step_num"
+
+              # First call has no hub ID.
+              # Worker claims an eligible hub from the requested tier.
+              if [ -z "$HUB_ID" ]; then
+
+                PAYLOAD=$(jq -n \
+                  --arg target_tier "$TARGET_TIER" \
+                  --argjson pause_ms "$PAUSE_MS" \
+                  '{
+                    target_tier: $target_tier,
+                    pause_ms: $pause_ms
+                  }')
+
+              else
+
+                # Once a hub has been claimed, every subsequent call
+                # is pinned to that exact Factory hub.
+                PAYLOAD=$(jq -n \
+                  --arg factory_hub_id "$HUB_ID" \
+                  --arg target_tier "$TARGET_TIER" \
+                  --argjson pause_ms "$PAUSE_MS" \
+                  '{
+                    factory_hub_id: $factory_hub_id,
+                    target_tier: $target_tier,
+                    pause_ms: $pause_ms
+                  }')
+
+              fi
 
               RESPONSE=$(curl \
                 --silent \
@@ -160,43 +157,77 @@ jobs:
                 '.factory_hub_id // .result.factory_hub_id // empty'
               )
 
-              if [ -n "$RESPONSE_HUB_ID" ] &&
-                 [ "$RESPONSE_HUB_ID" != "$HUB_ID" ]; then
-                echo "Safety failure: requested $HUB_ID but Worker returned $RESPONSE_HUB_ID"
-                exit 1
+              # Capture the hub claimed by the Factory.
+              if [ -z "$HUB_ID" ]; then
+
+                if [ -z "$RESPONSE_HUB_ID" ]; then
+                  echo "Factory did not return a factory_hub_id."
+                  echo "Cannot safely continue."
+                  exit 1
+                fi
+
+                HUB_ID="$RESPONSE_HUB_ID"
+
+                echo ""
+                echo "CLAIMED FACTORY HUB: $HUB_ID"
+
+              else
+
+                # Safety: once claimed, Worker must never switch hubs.
+                if [ -n "$RESPONSE_HUB_ID" ] &&
+                   [ "$RESPONSE_HUB_ID" != "$HUB_ID" ]; then
+
+                  echo "SAFETY FAILURE"
+                  echo "Expected hub: $HUB_ID"
+                  echo "Worker returned: $RESPONSE_HUB_ID"
+                  exit 1
+                fi
+
               fi
 
               if echo "$RESPONSE" | jq -e '.hub_done == true' >/dev/null; then
+
+                echo ""
                 echo "Hub completed: $HUB_ID"
+
                 HUB_COMPLETED="true"
                 break
               fi
 
               if echo "$RESPONSE" | jq -e '.ok != true' >/dev/null; then
+
                 ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r \
                   '.error // .result.error // .message // "Unknown Worker failure"'
                 )
 
-                echo "Worker failed for hub $HUB_ID: $ERROR_MESSAGE"
+                echo ""
+                echo "Worker failed for hub $HUB_ID"
+                echo "$ERROR_MESSAGE"
+
                 exit 1
               fi
 
               sleep $((PAUSE_MS / 1000))
+
             done
 
             if [ "$HUB_COMPLETED" != "true" ]; then
+              echo ""
               echo "Hub did not complete within $MAX_STEPS steps."
               echo "Factory hub ID: $HUB_ID"
               exit 1
             fi
+
+            echo ""
+            echo "Worker $WORKER_NUMBER finished hub $hub_num of $HUBS_FOR_WORKER."
+
           done
 
-          if [ "$ASSIGNED_COUNT" -eq 0 ]; then
-            echo "No hubs assigned to Worker $WORKER_NUMBER."
-          else
-            echo ""
-            echo "Worker $WORKER_NUMBER completed $ASSIGNED_COUNT assigned hubs."
-          fi
+          echo ""
+          echo "======================================"
+          echo "Worker $WORKER_NUMBER finished."
+          echo "Completed hubs: $HUBS_FOR_WORKER"
+          echo "======================================"
 
         env:
           FACTORY_URL: ${{ secrets.FACTORY_URL }}
