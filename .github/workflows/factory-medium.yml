@@ -18,6 +18,12 @@ on:
         required: true
         type: string
 
+      number_of_hubs:
+        description: "Number of hubs to run from the supplied list"
+        required: true
+        default: "5"
+        type: string
+
       pause_ms:
         description: "Pause between cluster batches"
         required: true
@@ -44,6 +50,7 @@ jobs:
           set -euo pipefail
 
           TARGET_TIER="${{ github.event.inputs.target_tier }}"
+          NUMBER_OF_HUBS="${{ github.event.inputs.number_of_hubs }}"
           PAUSE_MS="${{ github.event.inputs.pause_ms }}"
           MAX_STEPS="${{ github.event.inputs.max_steps_per_hub }}"
           WORKER_NUMBER="${{ matrix.worker }}"
@@ -54,34 +61,52 @@ jobs:
           echo "======================================"
           echo "Factory Selected Hubs"
           echo "Tier: $TARGET_TIER"
+          echo "Requested hubs: $NUMBER_OF_HUBS"
           echo "Worker: $WORKER_NUMBER / $WORKER_COUNT"
           echo "Max steps per hub: $MAX_STEPS"
           echo "Pause: ${PAUSE_MS}ms"
           echo "======================================"
 
+          # Validate number_of_hubs.
+          if ! [[ "$NUMBER_OF_HUBS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "number_of_hubs must be a positive integer."
+            exit 1
+          fi
+
           # Accept comma-separated IDs or one ID per line.
-          mapfile -t ALL_HUB_IDS < <(
+          mapfile -t SUPPLIED_HUB_IDS < <(
             printf '%s\n' "$RAW_HUB_IDS" |
             tr ',' '\n' |
             sed 's/^[[:space:]]*//;s/[[:space:]]*$//' |
             grep -E '^[0-9a-fA-F-]{36}$'
           )
 
-          TOTAL_HUBS="${#ALL_HUB_IDS[@]}"
+          SUPPLIED_TOTAL="${#SUPPLIED_HUB_IDS[@]}"
 
-          if [ "$TOTAL_HUBS" -eq 0 ]; then
+          if [ "$SUPPLIED_TOTAL" -eq 0 ]; then
             echo "No valid Factory hub IDs supplied."
             exit 1
           fi
 
-          echo "Total supplied hub IDs: $TOTAL_HUBS"
+          if [ "$NUMBER_OF_HUBS" -gt "$SUPPLIED_TOTAL" ]; then
+            echo "Requested $NUMBER_OF_HUBS hubs but only $SUPPLIED_TOTAL valid IDs were supplied."
+            exit 1
+          fi
+
+          # Take only the requested number BEFORE distributing to workers.
+          ALL_HUB_IDS=("${SUPPLIED_HUB_IDS[@]:0:$NUMBER_OF_HUBS}")
+
+          TOTAL_HUBS="${#ALL_HUB_IDS[@]}"
+
+          echo "Valid supplied hub IDs: $SUPPLIED_TOTAL"
+          echo "Hubs selected for this run: $TOTAL_HUBS"
 
           ASSIGNED_COUNT=0
 
           for index in "${!ALL_HUB_IDS[@]}"; do
             HUB_ID="${ALL_HUB_IDS[$index]}"
 
-            # Distribute hubs across the three workers.
+            # Distribute selected hubs across the three workers.
             ASSIGNED_WORKER=$(( (index % WORKER_COUNT) + 1 ))
 
             if [ "$ASSIGNED_WORKER" -ne "$WORKER_NUMBER" ]; then
